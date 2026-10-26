@@ -24,6 +24,10 @@ export interface NodePipelineState {
   spend: BudgetSpend;
   /** Set when parked at a human gate (G3) — cleared only by observed fact. */
   parked?: { gateStepId: string; since: string };
+  /** External refs harvested from steps (pr URL, branch) — fed to provider transitions. */
+  refs: Record<string, string>;
+  /** Terminal outcome; absent while the node is live. */
+  terminal?: "done" | "escalated";
 }
 
 export type LedgerEvent =
