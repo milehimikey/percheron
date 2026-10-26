@@ -111,8 +111,15 @@ export interface ExecResult {
 export interface Adapter {
   info(): AdapterInfo;
 
-  /** Worktree locally; branch/VM/container in the cloud. Idempotent per node. */
-  provisionWorkspace(nodeKey: string): Promise<WorkspaceRef>;
+  /**
+   * Worktree locally; branch/VM/container in the cloud. Idempotent per node.
+   * branch/base come from the provider's node data (em: `impl/<key>` on
+   * `main`, never stacked) — the adapter must not invent its own convention.
+   */
+  provisionWorkspace(
+    nodeKey: string,
+    opts?: { branch?: string; base?: string },
+  ): Promise<WorkspaceRef>;
   releaseWorkspace(ws: WorkspaceRef): Promise<void>;
 
   /** Dispatch one agent step. MUST be idempotent on request.idempotencyKey. */
