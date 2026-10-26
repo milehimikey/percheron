@@ -163,8 +163,37 @@ export class Controller {
     state: NodePipelineState,
     states: Map<string, NodePipelineState>,
   ): Promise<void> {
-    // Not started: dispatchability gate.
+    // Not started: first adopt business reality (fresh-ledger resume must be
+    // idempotent against the provider's own ledger — a merged slice is never
+    // re-dispatched, an awaiting-merge slice re-parks at its gate).
     if (state.stepId === null) {
+      const biz = node.meta["state"];
+      if (biz === "merged") {
+        state.terminal = "done";
+        await this.deps.ledger.append({
+          kind: "exited", nodeKey: node.key, stepId: "adopt:merged", exit: "done", artifacts: [],
+        });
+        this.log(`${node.key}: adopted provider state "merged" — DONE`);
+        return;
+      }
+      if (biz === "gap") {
+        state.terminal = "escalated";
+        await this.deps.ledger.append({
+          kind: "escalated", nodeKey: node.key, summary: 'adopted provider state "gap"',
+        });
+        return;
+      }
+      if (biz === "awaiting-merge") {
+        const gateStep = this.spec.pipeline.steps.find((s) => s.kind === "human");
+        if (gateStep) {
+          if (node.meta["branch"]) state.refs["branch"] = node.meta["branch"] as string;
+          state.stepId = gateStep.id;
+          state.parked = { gateStepId: gateStep.id, since: new Date().toISOString() };
+          await this.deps.ledger.append({ kind: "gate-parked", nodeKey: node.key, stepId: gateStep.id });
+          this.log(`${node.key}: adopted provider state "awaiting-merge" — re-parked at ${gateStep.id}`);
+          return;
+        }
+      }
       if (!(await this.dispatchable(node, states))) return;
       if (node.meta["branch"]) state.refs["branch"] = node.meta["branch"] as string;
       if (node.meta["base"]) state.refs["base"] = node.meta["base"] as string;
