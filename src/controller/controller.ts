@@ -452,9 +452,14 @@ export class Controller {
     for (const dep of node.dependsOn) {
       if (states.get(dep)?.terminal !== "done") return false;
     }
+    // Cap counts STARTED, live, unparked nodes — not active tasks: a node
+    // enters the pipeline one tick before its first task exists (wave-1
+    // benchmark bug: three dispatched under a cap of two).
     const cap = this.spec.scheduling?.maxConcurrent ?? 4;
     let active = 0;
-    for (const s of states.values()) if (s.activeTask) active += 1;
+    for (const s of states.values()) {
+      if (s.stepId !== null && !s.terminal && !s.parked) active += 1;
+    }
     if (active >= cap) return false;
     const readiness = await this.deps.provider.readiness(this.providerConfig, node.key);
     if (!readiness.ready) {
