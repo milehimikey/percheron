@@ -217,6 +217,12 @@ export class Controller {
         this.providerConfig,
         node,
       );
+      // Loop feedback (the loop's "feedback returns specific failure info"):
+      // a prior check failure rides into the retry as a named fact.
+      const lastFail = state.refs["lastCheckFailure"];
+      if (lastFail && state.round > 0) {
+        context.facts["lastValidateFailure"] = lastFail;
+      }
       const request: TaskRequest = {
         idempotencyKey: `${this.spec.name}/${node.key}/${step.id}/r${state.round}`,
         role: step.role,
@@ -308,7 +314,10 @@ export class Controller {
       details.push(`${cmd.join(" ")} -> ${res.exitCode}`);
       if (res.exitCode !== 0) {
         pass = false;
-        details.push(res.stderr.trim().split("\n")[0] ?? "");
+        // Keep enough output for the retry to act on (tail: errors end last).
+        const tail = `${res.stdout}\n${res.stderr}`.trim().split("\n").slice(-30).join("\n");
+        details.push(tail.split("\n")[0] ?? "");
+        state.refs["lastCheckFailure"] = `${cmd.join(" ")} exited ${res.exitCode}:\n${tail}`;
         break; // first failure is the finding; later checks may depend on it
       }
     }
