@@ -21,6 +21,8 @@ export interface NodePipelineState {
   /** Total transitions consumed (bounded by guards.maxHops). */
   hops: number;
   activeTask?: TaskRef;
+  /** Parallel-group tasks, keyed by member step id (reviewer ‖ critic). */
+  groupTasks?: Record<string, { ref: TaskRef; exit?: string }>;
   spend: BudgetSpend;
   /** Set when parked at a human gate (G3) — cleared only by observed fact. */
   parked?: { gateStepId: string; since: string };

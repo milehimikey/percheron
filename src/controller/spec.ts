@@ -20,6 +20,15 @@ export interface AgentStepSpec {
   contractRef: string;
   produces: ArtifactKind[];
   readOnly?: boolean;
+  /**
+   * Sibling agent-step ids that run CONCURRENTLY with this one as a group
+   * (reviewer ‖ critic). Every member must declare the same group (each
+   * listing the others) and an identical `on` map; the group joins when all
+   * members exit, and the aggregate exit is `failed` if any member failed,
+   * `blocked` if any blocked, else `done`. Independence (L4) is withholding:
+   * members get the same node context and never each other's output.
+   */
+  parallelWith?: string[];
   on: Partial<Record<ExitKind, RouteTarget>>;
 }
 

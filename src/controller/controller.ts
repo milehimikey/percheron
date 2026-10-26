@@ -73,6 +73,32 @@ export class Controller {
     if (!this.steps.has(spec.pipeline.entry)) {
       throw new Error(`spec: entry step "${spec.pipeline.entry}" not defined`);
     }
+    // Validate parallel groups: symmetric membership, agent-kind, identical routes.
+    for (const s of spec.pipeline.steps) {
+      if (s.kind !== "agent" || !s.parallelWith?.length) continue;
+      for (const other of s.parallelWith) {
+        const o = this.steps.get(other);
+        if (!o || o.kind !== "agent") {
+          throw new Error(`spec: ${s.id} parallelWith "${other}" is not an agent step`);
+        }
+        if (!(o.parallelWith ?? []).includes(s.id)) {
+          throw new Error(`spec: parallel group asymmetric — ${other} must list ${s.id}`);
+        }
+        if (JSON.stringify(o.on) !== JSON.stringify(s.on)) {
+          throw new Error(`spec: parallel group ${s.id}/${other} must share an identical "on" map`);
+        }
+      }
+    }
+  }
+
+  /** All member steps of the group containing stepId (sorted by declaration order). */
+  private group(stepId: string): AgentStepSpec[] {
+    const step = this.steps.get(stepId);
+    if (!step || step.kind !== "agent" || !step.parallelWith?.length) return [];
+    const ids = new Set([step.id, ...step.parallelWith]);
+    return this.spec.pipeline.steps.filter(
+      (s): s is AgentStepSpec => s.kind === "agent" && ids.has(s.id),
+    );
   }
 
   /** Preflight + derive. Throws on any blocking preflight issue. */
@@ -207,6 +233,10 @@ export class Controller {
 
     switch (step.kind) {
       case "agent":
+        if (step.parallelWith?.length) {
+          await this.advanceGroup(node, state, step);
+          return;
+        }
         await this.advanceAgent(node, state, step);
         return;
       case "check":
@@ -322,6 +352,109 @@ export class Controller {
       await this.escalate(node, state, `step ${step.id} exit "${exit}" has no route`);
       return;
     }
+    await this.route(node, state, step.id, target);
+  }
+
+  /**
+   * Parallel group (reviewer ‖ critic): dispatch every member concurrently,
+   * join when all have exited, aggregate (any failed → failed; any blocked →
+   * blocked; else done), and route once via the shared `on` map. On a failed
+   * join, the failing members' findings artifacts ride into the retry as
+   * loop feedback.
+   */
+  private async advanceGroup(
+    node: WorkNode,
+    state: NodePipelineState,
+    step: AgentStepSpec,
+  ): Promise<void> {
+    const members = this.group(step.id);
+    state.groupTasks ??= {};
+
+    // Dispatch any member without a task.
+    for (const m of members) {
+      if (state.groupTasks[m.id]) continue;
+      const role = this.spec.roles[m.role];
+      if (!role) throw new Error(`spec: role "${m.role}" has no binding`);
+      const adapter = this.adapter(role.adapter);
+      const ws = await adapter.provisionWorkspace(node.key, {
+        ...(state.refs["branch"] ? { branch: state.refs["branch"] } : {}),
+        ...(state.refs["base"] ? { base: state.refs["base"] } : {}),
+      });
+      const context = await this.deps.provider.nodeContext(this.providerConfig, node);
+      const ref = await adapter.createTask({
+        idempotencyKey: `${this.spec.name}/${node.key}/${m.id}/r${state.round}`,
+        role: m.role,
+        ...(role.model ? { model: role.model } : {}),
+        contractRef: m.contractRef,
+        context,
+        workspace: ws,
+        ...(m.readOnly ? { readOnly: true } : {}),
+        produces: m.produces,
+      });
+      state.groupTasks[m.id] = { ref };
+      await this.deps.ledger.append({ kind: "dispatched", nodeKey: node.key, stepId: m.id, task: ref });
+      this.log(`${node.key}: dispatched ${m.id} (${m.role}) ‖ group of ${members.length}`);
+    }
+
+    // Poll; collect exits.
+    const { readFile } = await import("node:fs/promises");
+    let allExited = true;
+    const failureFeedback: string[] = [];
+    for (const m of members) {
+      const entry = state.groupTasks[m.id];
+      if (!entry) { allExited = false; continue; }
+      if (entry.exit) continue;
+      const role = this.spec.roles[m.role];
+      if (!role) throw new Error(`spec: role "${m.role}" has no binding`);
+      const status = await this.adapter(role.adapter).status(entry.ref);
+      if (status.state !== "exited") { allExited = false; continue; }
+      const result = status.result;
+      for (const k of ["usd", "tokens", "wallClockMs"] as const) {
+        const v = result.spend[k];
+        if (v) state.spend[k] = (state.spend[k] ?? 0) + v;
+      }
+      let exit: ExitKind = result.exit;
+      const missing = m.produces.filter((kind) => !result.artifacts.some((a) => a.kind === kind));
+      if (exit !== "failed" && missing.length > 0) exit = "failed";
+      entry.exit = exit;
+      await this.deps.ledger.append({
+        kind: "exited", nodeKey: node.key, stepId: m.id, exit, artifacts: result.artifacts,
+      });
+      this.log(`${node.key}: ${m.id} exited ${exit} (group member)`);
+      if (exit === "failed") {
+        const findings = result.artifacts.find((a) => a.kind === "findings");
+        if (findings) {
+          try {
+            const body = await readFile(findings.ref, "utf8");
+            failureFeedback.push(`${m.id} findings:\n${body.trim().split("\n").slice(0, 30).join("\n")}`);
+          } catch { /* artifact unreadable; exit already failed */ }
+        }
+      }
+    }
+    if (!allExited) return;
+
+    const exits = members.map((m) => state.groupTasks?.[m.id]?.exit);
+    const groupExit: ExitKind = exits.includes("failed")
+      ? "failed"
+      : exits.includes("blocked")
+        ? "blocked"
+        : "done";
+    if (groupExit === "failed" && failureFeedback.length) {
+      state.refs["lastCheckFailure"] = failureFeedback.join("\n\n");
+    }
+    delete state.groupTasks;
+
+    const cap = this.spec.budgets?.perNodeUsd;
+    if (cap && (state.spend.usd ?? 0) > cap) {
+      await this.guardExceeded(node, state, "budget", cap, state.spend.usd ?? 0);
+      return;
+    }
+    const target = step.on[groupExit];
+    if (!target) {
+      await this.escalate(node, state, `group ${step.id} exit "${groupExit}" has no route`);
+      return;
+    }
+    this.log(`${node.key}: group ${members.map((m) => m.id).join("‖")} joined → ${groupExit}`);
     await this.route(node, state, step.id, target);
   }
 
@@ -450,6 +583,7 @@ export class Controller {
     }
     state.stepId = stepId;
     delete state.activeTask;
+    delete state.groupTasks;
   }
 
   private async guardExceeded(
