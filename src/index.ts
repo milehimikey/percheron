@@ -6,3 +6,4 @@ export * from "./controller/controller.js";
 export * from "./controller/file-ledger.js";
 export * from "./observers/git-merged.js";
 export * from "./controller/spec-loader.js";
+export * from "./run.js";

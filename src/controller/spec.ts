@@ -78,6 +78,7 @@ export interface BusinessTransitions {
   onGateParked?: string; // em: "awaiting-merge"
   onGateCleared?: string; // em: "merged"
   onEscalate?: string; // em: "held"
+  onReopen?: string; // em: "planned" — a human reopened an escalated node
 }
 
 export interface RoleBinding {

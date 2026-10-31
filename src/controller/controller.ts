@@ -51,6 +51,39 @@ export interface ControllerDeps {
   log?: (line: string) => void;
 }
 
+/**
+ * Loop feedback must name the failure, not the noise around it (scale
+ * benchmark: a 900s gradle run ended in 30 lines of Axon shutdown INFO logs
+ * and "6 failed" — the retry learned nothing). Keep the lines that carry
+ * failure signatures (test names, assertion text, compiler errors, failed
+ * tasks), then the tail for the summary.
+ */
+export function failureExcerpt(output: string, opts: { maxSignal?: number; tail?: number } = {}): string {
+  const maxSignal = opts.maxSignal ?? 60;
+  const tailN = opts.tail ?? 12;
+  const lines = output.split("\n").map((l) => l.trimEnd()).filter((l) => l.length > 0);
+  const signal = /FAILED|FAIL\b|\berror\b|Error|Exception|expected|but was|but got|AssertionError|assert|\be: |Task .* FAILED|tests completed|failing|not found|Unresolved|cannot|BUILD FAILED/;
+  // Framework log lines (any level below ERROR) are noise even when they say
+  // "Exception": a gRPC WARN storm buried the one real AssertionError.
+  const noise = /^\S+\s+(INFO|DEBUG|TRACE|WARN)\s|^\d{4}-\d{2}-\d{2}T[^ ]+\s+(INFO|DEBUG|TRACE|WARN)\b|^\s+at [\w.$]+\(|^io\.grpc\.|\[grpc-/;
+  const picked = lines.filter((l) => signal.test(l) && !noise.test(l)).slice(0, maxSignal);
+  const tail = lines.filter((l) => !noise.test(l)).slice(-tailN);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const l of [...picked, ...tail]) {
+    if (seen.has(l)) continue;
+    seen.add(l);
+    out.push(l);
+  }
+  return out.join("\n");
+}
+
+interface CheckOutcome {
+  pass: boolean;
+  details: string[];
+  lastFailure?: string;
+}
+
 export interface SettleSummary {
   done: string[];
   escalated: string[];
@@ -172,6 +205,47 @@ export class Controller {
     return this.summary();
   }
 
+  /**
+   * Operator action: a human reopens an ESCALATED node with a recorded reason.
+   * The node re-enters the pipeline at the entry step on the next tick, at
+   * round 0 and hop 0 (a reopen is a new traversal; the lifetime hop count is
+   * kept on the record) but with its spend and last failure intact (the budget
+   * guard stays honest; the failure rides into the retry as feedback).
+   * The provider's business state is moved to `transitions.onReopen` first so
+   * a provider hold (em: `held`) does not refuse the dispatch. Run it while
+   * the controller is stopped: the ledger has one writer.
+   */
+  async reopen(nodeKey: string, reason: string, opts: { feedback?: string | null } = {}): Promise<void> {
+    if (!this.graph) await this.plan();
+    const node = this.graph.nodes.find((n) => n.key === nodeKey);
+    if (!node) throw new Error(`reopen: "${nodeKey}" is not a node of this engagement`);
+    const state = (await this.nodeStates()).get(nodeKey);
+    if (!state || state.terminal !== "escalated") {
+      throw new Error(`reopen: "${nodeKey}" is not escalated (${state?.terminal ?? state?.stepId ?? "never started"})`);
+    }
+    delete state.terminal;
+    delete state.activeTask;
+    delete state.groupTasks;
+    delete state.parked;
+    state.stepId = null;
+    state.round = 0;
+    state.generation = (state.generation ?? 0) + 1;
+    // maxHops bounds ONE traversal of the pipeline. A reopen is a new traversal
+    // under a human's authority, so hops restart; the lifetime count stays on
+    // the record for reporting (benchmark: a reopened node at 15/16 hops died
+    // on its first step for nothing it did in this generation).
+    state.lifetimeHops = (state.lifetimeHops ?? 0) + state.hops;
+    state.hops = 0;
+    // The human may replace the recorded failure with their own context (the
+    // cause was fixed elsewhere; what the retry must know) or clear it.
+    if (opts.feedback === null) delete state.refs["lastCheckFailure"];
+    else if (typeof opts.feedback === "string") state.refs["lastCheckFailure"] = `human note: ${opts.feedback}`;
+    await this.deps.ledger.append({ kind: "reopened", nodeKey, summary: reason });
+    await this.transitionBusiness(node, state, this.spec.work.transitions?.onReopen);
+    await this.deps.ledger.setNodeState(state);
+    this.log(`${nodeKey}: REOPENED by human — ${reason}`);
+  }
+
   async summary(): Promise<SettleSummary> {
     const states = await this.nodeStates();
     const out: SettleSummary = { done: [], escalated: [], parked: [], pending: [] };
@@ -284,12 +358,12 @@ export class Controller {
       context.briefRefs = [...this.specBriefs(), ...context.briefRefs];
       // Loop feedback (the loop's "feedback returns specific failure info"):
       // a prior check failure rides into the retry as a named fact.
+      // A recorded failure is the verdict on the previous attempt whatever the
+      // round number says (a reopened node restarts at round 0 WITH its history).
       const lastFail = state.refs["lastCheckFailure"];
-      if (lastFail && state.round > 0) {
-        context.facts["lastValidateFailure"] = lastFail;
-      }
+      if (lastFail) context.facts["lastValidateFailure"] = lastFail;
       const request: TaskRequest = {
-        idempotencyKey: `${this.spec.name}/${node.key}/${step.id}/r${state.round}`,
+        idempotencyKey: this.taskKey(node, state, step.id),
         role: step.role,
         ...(role.model ? { model: role.model } : {}),
         contractRef: step.contractRef,
@@ -401,7 +475,7 @@ export class Controller {
       const context = await this.deps.provider.nodeContext(this.providerConfig, node);
       context.briefRefs = [...this.specBriefs(), ...context.briefRefs];
       const ref = await adapter.createTask({
-        idempotencyKey: `${this.spec.name}/${node.key}/${m.id}/r${state.round}`,
+        idempotencyKey: this.taskKey(node, state, m.id),
         role: m.role,
         ...(role.model ? { model: role.model } : {}),
         contractRef: m.contractRef,
@@ -478,31 +552,40 @@ export class Controller {
     await this.route(node, state, step.id, target);
   }
 
+  /**
+   * Check steps run ASYNCHRONOUSLY: a check is started on one tick and
+   * collected on a later one, so a 10-minute test suite never freezes the
+   * loop for every other node (scale-benchmark finding, 2026-10-31). The
+   * running check lives in memory only — checks are deterministic and
+   * idempotent, so a controller that dies mid-check simply re-runs it on
+   * resume; nothing about it needs the ledger.
+   */
+  private readonly checks = new Map<string, { done: boolean; result?: CheckOutcome }>();
+
   private async advanceCheck(
     node: WorkNode,
     state: NodePipelineState,
     step: CheckStepSpec,
   ): Promise<void> {
-    const adapter = this.anyAdapter();
-    const ws = await adapter.provisionWorkspace(node.key, {
-      ...(state.refs["branch"] ? { branch: state.refs["branch"] } : {}),
-      ...(state.refs["base"] ? { base: state.refs["base"] } : {}),
-    });
-    let pass = true;
-    const details: string[] = [];
-    for (const argv of step.run) {
-      const cmd = argv.map((a) => a.replaceAll("{key}", node.key));
-      const res = await adapter.exec(ws, cmd);
-      details.push(`${cmd.join(" ")} -> ${res.exitCode}`);
-      if (res.exitCode !== 0) {
-        pass = false;
-        // Keep enough output for the retry to act on (tail: errors end last).
-        const tail = `${res.stdout}\n${res.stderr}`.trim().split("\n").slice(-30).join("\n");
-        details.push(tail.split("\n")[0] ?? "");
-        state.refs["lastCheckFailure"] = `${cmd.join(" ")} exited ${res.exitCode}:\n${tail}`;
-        break; // first failure is the finding; later checks may depend on it
-      }
+    const key = `${node.key}/${step.id}/r${state.round}`;
+    let running = this.checks.get(key);
+    if (!running) {
+      const slot: { done: boolean; result?: CheckOutcome } = { done: false };
+      this.checks.set(key, slot);
+      void this.runCheck(node, state, step).then(
+        (result) => { slot.result = result; slot.done = true; },
+        (err) => {
+          slot.result = { pass: false, details: [`check runner error: ${(err as Error).message}`] };
+          slot.done = true;
+        },
+      );
+      this.log(`${node.key}: check ${step.id} started (${step.run.length} command(s))`);
+      return;
     }
+    if (!running.done || !running.result) return; // still running
+    this.checks.delete(key);
+    const { pass, details, lastFailure } = running.result;
+    if (lastFailure) state.refs["lastCheckFailure"] = lastFailure;
     await this.deps.ledger.append({
       kind: "check",
       nodeKey: node.key,
@@ -517,6 +600,38 @@ export class Controller {
       return;
     }
     await this.route(node, state, step.id, target);
+  }
+
+  /** Adapter-located, controller-judged: run the commands in the node's workspace. */
+  private async runCheck(
+    node: WorkNode,
+    state: NodePipelineState,
+    step: CheckStepSpec,
+  ): Promise<CheckOutcome> {
+    const adapter = this.anyAdapter();
+    const ws = await adapter.provisionWorkspace(node.key, {
+      ...(state.refs["branch"] ? { branch: state.refs["branch"] } : {}),
+      ...(state.refs["base"] ? { base: state.refs["base"] } : {}),
+    });
+    const details: string[] = [];
+    for (const argv of step.run) {
+      const cmd = argv.map((a) => a.replaceAll("{key}", node.key));
+      const started = Date.now();
+      const res = await adapter.exec(ws, cmd);
+      details.push(`${cmd.join(" ")} -> ${res.exitCode} (${Math.round((Date.now() - started) / 1000)}s)`);
+      if (res.exitCode !== 0) {
+        const excerpt = failureExcerpt(`${res.stdout}\n${res.stderr}`);
+        details.push(excerpt.split("\n")[0] ?? "");
+        return { pass: false, details, lastFailure: `${cmd.join(" ")} exited ${res.exitCode}:\n${excerpt}` };
+      }
+    }
+    return { pass: true, details };
+  }
+
+  /** True while any node has a live agent task or a running check. */
+  private checksRunning(): boolean {
+    for (const c of this.checks.values()) if (!c.done) return true;
+    return false;
   }
 
   private async advanceHuman(
@@ -653,6 +768,12 @@ export class Controller {
     return limits;
   }
 
+  /** Stable across controller crashes; distinct across reopen generations. */
+  private taskKey(node: WorkNode, state: NodePipelineState, stepId: string): string {
+    const gen = state.generation ? `g${state.generation}` : "";
+    return `${this.spec.name}/${node.key}/${stepId}/${gen}r${state.round}`;
+  }
+
   /** S1/S2: the engagement's goal-spec and briefing lead every agent's reading list. */
   private specBriefs(): string[] {
     const e = this.spec.engagement;
@@ -733,8 +854,9 @@ export class Controller {
   }
 
   private async anyRunning(): Promise<boolean> {
+    if (this.checksRunning()) return true;
     const states = await this.nodeStates();
-    for (const s of states.values()) if (s.activeTask) return true;
+    for (const s of states.values()) if (s.activeTask || s.groupTasks) return true;
     return false;
   }
 

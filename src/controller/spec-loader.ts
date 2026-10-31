@@ -199,7 +199,7 @@ export function validateSpecDocument(doc: unknown, opts: { baseDir: string }): S
     if (w["config"] !== undefined && !isObj(w["config"])) ctx.error("work.config", `expected a mapping, got ${describe(w["config"])}`, "Give the provider its config block; the provider schema-checks it at plan().");
     let transitions: EngagementSpec["work"]["transitions"];
     if (w["transitions"] !== undefined) {
-      const T = ["onDispatch", "onGateParked", "onGateCleared", "onEscalate"] as const;
+      const T = ["onDispatch", "onGateParked", "onGateCleared", "onEscalate", "onReopen"] as const;
       if (ctx.only("work.transitions", w["transitions"], T)) {
         transitions = {};
         for (const k of T) {

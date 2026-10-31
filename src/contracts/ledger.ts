@@ -18,8 +18,17 @@ export interface NodePipelineState {
   stepId: string | null;
   /** Findings-loop round (bounded by guards.maxRounds). */
   round: number;
+  /**
+   * Reopen generation: incremented each time a human reopens the node after
+   * an escalation. Rounds restart per generation, and the generation is part
+   * of every idempotency key so a reopened round 0 is a NEW dispatch, not the
+   * finished task handed back by an idempotent adapter. Absent = 0.
+   */
+  generation?: number;
   /** Total transitions consumed (bounded by guards.maxHops). */
   hops: number;
+  /** Hops spent in earlier reopen generations (hops restart per generation; see Controller.reopen). */
+  lifetimeHops?: number;
   activeTask?: TaskRef;
   /** Parallel-group tasks, keyed by member step id (reviewer ‖ critic). */
   groupTasks?: Record<string, { ref: TaskRef; exit?: string }>;
@@ -39,7 +48,9 @@ export type LedgerEvent =
   | { kind: "gate-parked"; nodeKey: string; stepId: string }
   | { kind: "gate-cleared"; nodeKey: string; stepId: string; evidence: Artifact[] }
   | { kind: "guard-exceeded"; nodeKey: string; exceeded: GuardExceeded }
-  | { kind: "escalated"; nodeKey: string; summary: string };
+  | { kind: "escalated"; nodeKey: string; summary: string }
+  /** A human reopened an escalated node with a recorded reason (operator action). */
+  | { kind: "reopened"; nodeKey: string; summary: string };
 
 export interface LedgerEventRecord {
   at: string; // ISO timestamp
