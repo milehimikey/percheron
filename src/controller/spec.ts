@@ -102,6 +102,26 @@ export interface EngagementSpec {
     maxConcurrent?: number;
   };
   budgets?: {
+    /**
+     * Node-wide cap. Checked AT DISPATCH: a step is not dispatched when the
+     * node's spend has reached the cap (guard `budget`, named), and every
+     * dispatched task carries the remaining headroom as its own ceiling. A
+     * task that exits `done` is never killed for budget after the fact — the
+     * work exists; the next dispatch is where the guard bites (benchmark
+     * finding: the post-exit guard killed a successful run).
+     */
     perNodeUsd?: number;
+    /**
+     * Least headroom worth dispatching into (default 0). Below it the node is
+     * treated as exhausted rather than sent a task that dies on its first
+     * API call.
+     */
+    dispatchFloorUsd?: number;
+    /** Per-task ceilings, enforced by the adapter (headless flags / kill). */
+    perTask?: {
+      usd?: number;
+      maxTurns?: number;
+      timeoutMs?: number;
+    };
   };
 }

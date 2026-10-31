@@ -21,5 +21,11 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test \"dist/**/*.test.js\"",
+    "typecheck": "tsc --noEmit -p ."
   }
 }

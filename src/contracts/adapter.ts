@@ -73,7 +73,14 @@ export interface TaskRequest {
   /** Declared artifacts (L5). The adapter collects them; the controller
    * refuses the exit if any declared artifact is missing. */
   produces: ArtifactKind[];
-  limits?: BudgetSpend & { timeoutMs?: number };
+  /**
+   * Per-task ceilings, computed by the controller AT DISPATCH (remaining
+   * node budget, spec per-task caps) and enforced by the adapter as
+   * guarantees (headless `--max-budget-usd`, `--max-turns`, a kill at the
+   * deadline). A task that hits one exits `failed` with the limit named in
+   * `TaskResult.violations` — never a silent overrun judged after the fact.
+   */
+  limits?: BudgetSpend & { timeoutMs?: number; maxTurns?: number };
 }
 
 export interface TaskRef {
@@ -88,6 +95,14 @@ export interface TaskResult {
   spend: BudgetSpend;
   /** Pointer to the raw transcript/log for the evidence archive, if any. */
   transcriptRef?: string;
+  /**
+   * Guarantee violations the ADAPTER detected and enforced, named for the
+   * ledger and for loop feedback: a workspace escape (stray writes outside
+   * the task's workspace, quarantined), a limit hit (`max-turns`,
+   * `max-budget-usd`, `timeout`). Non-empty ⇒ `exit` is `failed`; the
+   * controller never routes a violating task as done.
+   */
+  violations?: string[];
 }
 
 export type TaskStatus =

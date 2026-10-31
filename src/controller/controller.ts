@@ -11,9 +11,12 @@
  * and the human (merge). The controller is the state machine — on purpose
  * (Khourshid's critique, accepted as the design).
  *
- * v0.1 limitations, explicit:
- *   - `parallelWith` groups are serialized (declared order). Blindness is
- *     withholding, so independence survives; wall-clock does not. v0.2 work.
+ * Budget policy (v0.2, from the toolshed benchmark): the node budget is
+ * checked AT DISPATCH and the remaining headroom travels with the task as an
+ * adapter-enforced ceiling. A task that exits `done` is never escalated for
+ * spend after the fact — the post-exit guard once killed a successful run.
+ *
+ * Limitations, explicit:
  *   - judge steps are pass-through placeholders (logged, never routing).
  *   - dispatch policy: a node dispatches when every dependsOn node is
  *     terminal-done, readiness.ready is true, and no provider hold
@@ -268,6 +271,8 @@ export class Controller {
     const adapter = this.adapter(role.adapter);
 
     if (!state.activeTask) {
+      const limits = await this.dispatchLimits(node, state, 1);
+      if (!limits) return; // budget guard fired before any spend
       const ws = await adapter.provisionWorkspace(node.key, {
         ...(state.refs["branch"] ? { branch: state.refs["branch"] } : {}),
         ...(state.refs["base"] ? { base: state.refs["base"] } : {}),
@@ -291,6 +296,7 @@ export class Controller {
         workspace: ws,
         ...(step.readOnly ? { readOnly: true } : {}),
         produces: step.produces,
+        ...(Object.keys(limits).length ? { limits } : {}),
       };
       state.activeTask = await adapter.createTask(request);
       await this.deps.ledger.append({
@@ -322,6 +328,13 @@ export class Controller {
       exit = "failed";
       this.log(`${node.key}: ${step.id} exit demoted to failed — missing artifacts: ${missing.join(", ")}`);
     }
+    // Adapter guarantee violations (workspace escape, limit hit): failed, and
+    // the named violation rides into the retry as loop feedback.
+    if (result.violations?.length) {
+      exit = "failed";
+      state.refs["lastCheckFailure"] = this.violationFeedback(step.id, result.violations);
+      this.log(`${node.key}: ${step.id} violated guarantees — ${result.violations.join("; ")}`);
+    }
 
     // Harvest refs: a `pr` artifact's first line is the PR URL/branch ref.
     const pr = result.artifacts.find((a) => a.kind === "pr");
@@ -340,13 +353,9 @@ export class Controller {
     });
     this.log(`${node.key}: ${step.id} exited ${exit} (${result.artifacts.length} artifact(s))`);
 
-    // Budget guard (perNode).
-    const cap = this.spec.budgets?.perNodeUsd;
-    if (cap && (state.spend.usd ?? 0) > cap) {
-      await this.guardExceeded(node, state, "budget", cap, state.spend.usd ?? 0);
-      return;
-    }
-
+    // No post-exit budget guard: the budget is checked at dispatch (see
+    // dispatchLimits) and enforced per task by the adapter. A finished task
+    // routes on its exit; the next dispatch is where exhaustion bites.
     const target = step.on[exit];
     if (!target) {
       await this.escalate(node, state, `step ${step.id} exit "${exit}" has no route`);
@@ -370,7 +379,15 @@ export class Controller {
     const members = this.group(step.id);
     state.groupTasks ??= {};
 
-    // Dispatch any member without a task.
+    // Dispatch any member without a task. The remaining node budget is
+    // split evenly across the members dispatched in this pass.
+    const undispatched = members.filter((m) => !state.groupTasks?.[m.id]);
+    let limits: TaskRequest["limits"] = {};
+    if (undispatched.length) {
+      const l = await this.dispatchLimits(node, state, undispatched.length);
+      if (!l) return; // budget guard fired before any spend
+      limits = l;
+    }
     for (const m of members) {
       if (state.groupTasks[m.id]) continue;
       const role = this.spec.roles[m.role];
@@ -390,6 +407,7 @@ export class Controller {
         workspace: ws,
         ...(m.readOnly ? { readOnly: true } : {}),
         produces: m.produces,
+        ...(limits && Object.keys(limits).length ? { limits } : {}),
       });
       state.groupTasks[m.id] = { ref };
       await this.deps.ledger.append({ kind: "dispatched", nodeKey: node.key, stepId: m.id, task: ref });
@@ -416,6 +434,11 @@ export class Controller {
       let exit: ExitKind = result.exit;
       const missing = m.produces.filter((kind) => !result.artifacts.some((a) => a.kind === kind));
       if (exit !== "failed" && missing.length > 0) exit = "failed";
+      if (result.violations?.length) {
+        exit = "failed";
+        failureFeedback.push(this.violationFeedback(m.id, result.violations));
+        this.log(`${node.key}: ${m.id} violated guarantees — ${result.violations.join("; ")}`);
+      }
       entry.exit = exit;
       await this.deps.ledger.append({
         kind: "exited", nodeKey: node.key, stepId: m.id, exit, artifacts: result.artifacts,
@@ -444,11 +467,6 @@ export class Controller {
     }
     delete state.groupTasks;
 
-    const cap = this.spec.budgets?.perNodeUsd;
-    if (cap && (state.spend.usd ?? 0) > cap) {
-      await this.guardExceeded(node, state, "budget", cap, state.spend.usd ?? 0);
-      return;
-    }
     const target = step.on[groupExit];
     if (!target) {
       await this.escalate(node, state, `group ${step.id} exit "${groupExit}" has no route`);
@@ -554,8 +572,10 @@ export class Controller {
     if (!this.steps.has(target)) {
       throw new Error(`spec: route target "${target}" from ${fromStepId} not defined`);
     }
-    // Loop-back = a new round (bounded).
-    if (this.stepOrder.indexOf(target) < this.stepOrder.indexOf(fromStepId)) {
+    // Loop-back = a new round (bounded). Re-entering the SAME step is a
+    // round too: without the bump the retry's idempotency key would repeat
+    // and the adapter would hand back the finished task forever.
+    if (this.stepOrder.indexOf(target) <= this.stepOrder.indexOf(fromStepId)) {
       state.round += 1;
       if (state.round >= this.spec.pipeline.guards.maxRounds) {
         await this.guardExceeded(
@@ -598,7 +618,41 @@ export class Controller {
       nodeKey: node.key,
       exceeded: { guard, limit, actual, nodeKey: node.key },
     });
-    await this.escalate(node, state, `guard ${guard} exceeded: ${actual} > ${limit}`);
+    await this.escalate(node, state, `guard ${guard} exceeded: ${actual} vs limit ${limit}`);
+  }
+
+  /**
+   * Dispatch-time budget check — the guard bites BEFORE spend, never after a
+   * successful exit. Returns the per-task limits for `shares` tasks dispatched
+   * together (the remaining node headroom split evenly, capped by the spec's
+   * per-task ceilings), or null when the node is exhausted — in which case the
+   * `budget` guard has already fired and the caller must return.
+   */
+  private async dispatchLimits(
+    node: WorkNode,
+    state: NodePipelineState,
+    shares: number,
+  ): Promise<NonNullable<TaskRequest["limits"]> | null> {
+    const b = this.spec.budgets;
+    const limits: NonNullable<TaskRequest["limits"]> = {};
+    if (b?.perTask?.usd !== undefined) limits.usd = b.perTask.usd;
+    if (b?.perTask?.maxTurns !== undefined) limits.maxTurns = b.perTask.maxTurns;
+    if (b?.perTask?.timeoutMs !== undefined) limits.timeoutMs = b.perTask.timeoutMs;
+    if (b?.perNodeUsd !== undefined) {
+      const spent = state.spend.usd ?? 0;
+      const remaining = b.perNodeUsd - spent;
+      if (remaining <= (b.dispatchFloorUsd ?? 0)) {
+        await this.guardExceeded(node, state, "budget", b.perNodeUsd, spent);
+        return null;
+      }
+      const share = remaining / Math.max(1, shares);
+      limits.usd = limits.usd === undefined ? share : Math.min(limits.usd, share);
+    }
+    return limits;
+  }
+
+  private violationFeedback(stepId: string, violations: string[]): string {
+    return `${stepId} violated harness guarantees (the harness enforced them; fix the behaviour, do not retry the same action):\n- ${violations.join("\n- ")}`;
   }
 
   private async escalate(
