@@ -1,0 +1,102 @@
+# engagement.yaml — canonical em case, spec-format v0.2.
+# Validate: `percheron validate examples/em-engagement.yaml`
+# Relative paths (goalSpec, briefing, contract) resolve against this file's directory.
+specVersion: "0.2"
+
+engagement:
+  name: checkout-2026-11
+  mode: build
+  goalSpec: ./goal-spec.md          # S1 — signed-off, committed beside the spec
+  briefing: ./briefing.md           # S2 — read first by every agent step
+
+work:                               # G1 — the graph is DERIVED by the provider
+  provider: em
+  config:                           # provider-specific; em schema-checks it at plan()
+    model: models/checkout.em
+    engagement: checkout-2026-11
+  transitions:                      # provider business states, as data
+    onDispatch: building
+    onGateParked: awaiting-merge
+    onGateCleared: merged
+    onEscalate: held
+
+tools:                              # S4 pins — carried for the host's CI check
+  em: ">=1.19.5 <2.0.0"
+  schemas:
+    engagementPlan: ">=1.4"
+    validateSliceReady: ">=1.5"
+
+policy:                             # S3 — only implemented values validate
+  ratifiers: [mikey]
+  mergeAuthority: human
+  exceptionRouting: human_only
+  budgets:
+    perNode: { usd: 15, dispatchFloorUsd: 0.5 }       # checked AT DISPATCH
+    perTask: { usd: 6, maxTurns: 80, wallClock: 20m } # enforced by the adapter
+
+scheduling:                         # G2 — no level barriers
+  dispatchWhen: upstreamsMerged && ready
+  maxConcurrent: 4
+  levels: orderingHintOnly
+
+roles:                              # role -> executor binding (G5)
+  implementer: { adapter: local-subagent, model: sonnet }
+  reviewer:    { adapter: local-subagent, model: sonnet }
+  critic:
+    adapter: local-subagent
+    model: opus
+    independence: { freshContext: true, modelNot: [implementer], blindTo: [review] }
+
+adapters:                           # adapters are code; this is their config
+  local-subagent: {}
+
+pipeline:                           # per-node template, applied to every derived node
+  entry: implement
+  exits: [done, handoff, blocked, failed]           # closed enum (declarative confirmation)
+  guards: { maxRounds: 2, maxHops: 12 }
+  steps:
+    - id: implement
+      kind: agent
+      role: implementer
+      contract: ../roles/implementer.md
+      produces: [pr, evidenceMap, continuationNote]
+      on: { done: validate, handoff: validate, blocked: escalate, failed: implement }
+
+    - id: validate                  # deterministic, adapter-located, controller-judged
+      kind: check
+      run:
+        - em validate {config.model} --slice-ready {node.key} --json
+        - ["./gradlew", "test", "--quiet"]
+      on: { done: judge, failed: implement }
+
+    - id: judge                     # typed tier — advisory, never routing
+      kind: judge
+      rubrics: [slice-doc-quality]
+      advisory: true
+      on: { done: review }
+
+    - id: review
+      kind: agent
+      role: reviewer
+      contract: ../roles/reviewer.md
+      readOnly: true
+      parallelWith: [critique]
+      produces: [findings]
+      on: { done: merge-gate, failed: implement, blocked: escalate }
+
+    - id: critique
+      kind: agent
+      role: critic
+      contract: ../roles/critic.md
+      readOnly: true
+      parallelWith: [review]
+      produces: [findings]
+      on: { done: merge-gate, failed: implement, blocked: escalate }
+
+    - id: merge-gate                # G3 — durable interrupt, woken by an observed fact
+      kind: human
+      gate:
+        summary: "Slice ready: validate PASS, review and critique done"
+        evidenceRef: evidence/bundle.md
+      acceptance: { observer: git-merged, candidateRef: branch, verdicts: [merged] }
+      on: { done: node-done, failed: escalate }

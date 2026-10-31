@@ -171,6 +171,14 @@ test("the retry carries the remaining headroom, not the full cap", async () => {
   assert.ok(Math.abs((adapter.requests[1]?.limits?.usd ?? 0) - 0.6) < 1e-9);
 });
 
+test("engagement goalSpec and briefing lead every agent's briefRefs", async () => {
+  const adapter = new ScriptedAdapter([done(0.1)]);
+  const s = spec(undefined);
+  s.engagement = { goalSpec: "/abs/goal-spec.md", briefing: "/abs/briefing.md" };
+  await run(s, adapter);
+  assert.deepEqual(adapter.requests[0]?.context.briefRefs, ["/abs/goal-spec.md", "/abs/briefing.md"]);
+});
+
 test("adapter violations demote the exit and ride into the retry as named feedback", async () => {
   const adapter = new ScriptedAdapter([
     { ...done(0.1), violations: ["workspace-escape: 1 path(s) written to the main checkout"] },

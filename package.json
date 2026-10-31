@@ -9,7 +9,9 @@
     "url": "git+https://github.com/milehimikey/percheron.git"
   },
   "files": [
-    "README.md"
+    "README.md",
+    "dist",
+    "roles"
   ],
   "keywords": [
     "agents",
@@ -27,5 +29,17 @@
     "build": "tsc -p .",
     "test": "tsc -p . && node --test \"dist/**/*.test.js\"",
     "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
+  "bin": {
+    "percheron": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   }
 }

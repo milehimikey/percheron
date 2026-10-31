@@ -281,6 +281,7 @@ export class Controller {
         this.providerConfig,
         node,
       );
+      context.briefRefs = [...this.specBriefs(), ...context.briefRefs];
       // Loop feedback (the loop's "feedback returns specific failure info"):
       // a prior check failure rides into the retry as a named fact.
       const lastFail = state.refs["lastCheckFailure"];
@@ -398,6 +399,7 @@ export class Controller {
         ...(state.refs["base"] ? { base: state.refs["base"] } : {}),
       });
       const context = await this.deps.provider.nodeContext(this.providerConfig, node);
+      context.briefRefs = [...this.specBriefs(), ...context.briefRefs];
       const ref = await adapter.createTask({
         idempotencyKey: `${this.spec.name}/${node.key}/${m.id}/r${state.round}`,
         role: m.role,
@@ -649,6 +651,12 @@ export class Controller {
       limits.usd = limits.usd === undefined ? share : Math.min(limits.usd, share);
     }
     return limits;
+  }
+
+  /** S1/S2: the engagement's goal-spec and briefing lead every agent's reading list. */
+  private specBriefs(): string[] {
+    const e = this.spec.engagement;
+    return [e?.goalSpec, e?.briefing].filter((p): p is string => typeof p === "string");
   }
 
   private violationFeedback(stepId: string, violations: string[]): string {

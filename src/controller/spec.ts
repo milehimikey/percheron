@@ -83,10 +83,39 @@ export interface BusinessTransitions {
 export interface RoleBinding {
   adapter: string;
   model?: string;
+  independence?: RoleIndependence;
+}
+
+export interface RoleIndependence {
+  /** Separate process/session per task — true for every adapter so far. */
+  freshContext?: boolean;
+  /** Roles whose model this role must NOT share (checked statically at load). */
+  modelNot?: string[];
+  /** Step ids whose outputs are withheld — documentation of the default. */
+  blindTo?: string[];
 }
 
 export interface EngagementSpec {
+  /** Schema version of the spec file this object came from (loader-set). */
+  specVersion?: string;
   name: string;
+  /** S1/S2: signed-off goal and briefing, absolute paths, injected into every
+   * agent step's `briefRefs` ahead of the provider's own. */
+  engagement?: {
+    mode?: "build" | "investigate";
+    goalSpec?: string;
+    briefing?: string;
+  };
+  /** S4 pins, carried for the host's CI check; the controller does not verify them. */
+  tools?: Record<string, unknown>;
+  /** Adapter configs by id — adapters are code; the host instantiates them from this. */
+  adapters?: Record<string, unknown>;
+  /** S3 authority knobs. Only the implemented values validate. */
+  policy?: {
+    ratifiers?: string[];
+    mergeAuthority?: "human";
+    exceptionRouting?: "human_only";
+  };
   work: {
     provider: string;
     config: unknown;
