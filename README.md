@@ -15,9 +15,9 @@ percheron is not em-specific.
 
 ## Documentation
 
-Start with [docs/concepts.md](docs/concepts.md) for the three layers (harness, loop, graph)
-and where each piece of percheron lives, then [docs/walkthrough.md](docs/walkthrough.md)
-to run your first engagement. The index is [docs/README.md](docs/README.md).
+Start with [docs/concepts.md](https://github.com/milehimikey/percheron/blob/main/docs/concepts.md) for the three layers (harness, loop, graph)
+and where each piece of percheron lives, then [docs/walkthrough.md](https://github.com/milehimikey/percheron/blob/main/docs/walkthrough.md)
+to run your first engagement. The index is [docs/README.md](https://github.com/milehimikey/percheron/blob/main/docs/README.md).
 
 ## In one paragraph
 
@@ -61,7 +61,7 @@ eleven slices merged, 64 agent tasks, about 32 dollars, under five hours of cont
 zero workspace escapes. The eleventh was correctly held by the provider. Two escalations
 surfaced a design gap in the target project that no implementer could have closed, which
 is what escalation is for. Details in
-[docs/benchmark-toolshed-2026-10.md](docs/benchmark-toolshed-2026-10.md).
+[docs/benchmark-toolshed-2026-10.md](https://github.com/milehimikey/percheron/blob/main/docs/benchmark-toolshed-2026-10.md).
 
 ## Not yet
 

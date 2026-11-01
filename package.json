@@ -1,7 +1,7 @@
 {
   "name": "percheron",
   "version": "0.0.2",
-  "description": "percheron — a portable engagement harness: derived work-graphs, evidence-gated loops, human gates as durable interrupts, over any agent harness.",
+  "description": "percheron \u2014 a portable engagement harness: derived work-graphs, evidence-gated loops, human gates as durable interrupts, over any agent harness.",
   "license": "MIT",
   "author": "Mike Key <milehimikey@gmail.com>",
   "repository": {
@@ -11,7 +11,8 @@
   "files": [
     "README.md",
     "dist",
-    "roles"
+    "roles",
+    "docs"
   ],
   "keywords": [
     "agents",
