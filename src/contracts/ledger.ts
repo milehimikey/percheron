@@ -16,8 +16,10 @@ export interface NodePipelineState {
   nodeKey: string;
   /** Current step id in the pipeline template, or null before first dispatch. */
   stepId: string | null;
-  /** Findings-loop round (bounded by guards.maxRounds). */
+  /** Loop-backs taken this generation, all edges (monotonic: part of every idempotency key). */
   round: number;
+  /** Loop-backs per edge (`"validate->implement": 2`) — what guards.maxRounds bounds. */
+  rounds?: Record<string, number>;
   /**
    * Reopen generation: incremented each time a human reopens the node after
    * an escalation. Rounds restart per generation, and the generation is part

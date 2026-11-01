@@ -157,4 +157,12 @@ export interface Adapter {
     command: string[],
     opts?: { timeoutMs?: number },
   ): Promise<ExecResult>;
+
+  /**
+   * Optional: file a controller-produced artefact (a failing check's full
+   * output) with the node's evidence and return a ref the ledger can carry.
+   * An adapter without durable storage omits it; the controller then keeps
+   * only the excerpt (scale benchmark finding 11).
+   */
+  recordEvidence?(nodeKey: string, name: string, content: string): Promise<string>;
 }

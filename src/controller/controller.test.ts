@@ -53,7 +53,7 @@ class ScriptedAdapter implements Adapter {
     return { state: "exited", result };
   }
   async cancel() {}
-  async exec() {
+  async exec(_ws: WorkspaceRef, _command: string[]) {
     return { exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
   }
 }
@@ -254,10 +254,11 @@ test("failureExcerpt keeps the failing test names and assertion text, drops INFO
 });
 
 test("reopen: a human un-escalates a node; it re-enters at round 0 with its failure as feedback", async () => {
-  // Two failed rounds exhaust maxRounds=2 → escalated. Reopen → dispatch again.
+  // maxRounds=1: one retry on the implement->implement edge; the second
+  // failure exhausts it → escalated. Reopen → dispatch again.
   const adapter = new ScriptedAdapter([failed(0.1), failed(0.1), done(0.1)]);
   const s = spec({ perNodeUsd: 5 });
-  s.pipeline.guards.maxRounds = 2;
+  s.pipeline.guards.maxRounds = 1;
   // Tight enough that the hops of the two failed rounds would exceed it if
   // they carried over (benchmark: a reopened node died at 17/16 on step one).
   s.pipeline.guards.maxHops = 3;
@@ -334,4 +335,108 @@ test("reject: the human at a parked gate says no → the gate's failed route (es
   for (let i = 0; i < 3; i++) await c.tick();
   assert.equal(adapter.requests.length, 2, "reopened node dispatches again");
   assert.equal(adapter.requests[1]?.context.facts["lastValidateFailure"], "human note: use the hook shape");
+});
+
+/** ScriptedAdapter whose exec answers from a script keyed by the command's binary. */
+class ExecAdapter extends ScriptedAdapter {
+  evidence: Array<{ nodeKey: string; name: string; content: string }> = [];
+  constructor(script: TaskResult[], private readonly execs: Record<string, Array<{ exitCode: number; stdout?: string }>>) {
+    super(script);
+  }
+  override async exec(_ws: WorkspaceRef, command: string[]) {
+    const next = this.execs[command[0] ?? ""]?.shift();
+    if (!next) return { exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
+    return { exitCode: next.exitCode, stdout: next.stdout ?? "", stderr: "", durationMs: 0 };
+  }
+  async recordEvidence(nodeKey: string, name: string, content: string) {
+    this.evidence.push({ nodeKey, name, content });
+    return `/ev/${nodeKey}/${name}`;
+  }
+}
+
+function pipelineWithCheck(): EngagementSpec {
+  const s = spec({ perNodeUsd: 50 });
+  s.roles["critic"] = { adapter: "fake" };
+  s.pipeline.steps = [
+    { id: "implement", kind: "agent", role: "implementer", contractRef: "roles/implementer.md", produces: ["report"], on: { done: "validate", failed: "implement", blocked: "escalate" } },
+    { id: "validate", kind: "check", run: [["./gradlew", "test", "--quiet"]], on: { done: "critique", failed: "implement" } },
+    { id: "critique", kind: "agent", role: "critic", contractRef: "roles/critic.md", produces: ["report"], on: { done: "node-done", failed: "implement", blocked: "escalate" } },
+  ];
+  return s;
+}
+
+test("rounds are counted per loop-back edge: a validate slip does not spend a findings round", async () => {
+  // implement → validate FAIL → implement → validate ok → critique failed → implement
+  //           → validate ok → critique failed → escalate (critique->implement taken twice, max 1).
+  // Under one shared counter the FIRST critique failure would already have escalated.
+  // Agent results in dispatch order: implement, implement (after the slip), critique, implement, critique.
+  const adapter = new ExecAdapter(
+    [done(0.1), done(0.1), failed(0.1), done(0.1), failed(0.1)],
+    { "./gradlew": [{ exitCode: 1, stdout: "e: Foo.kt:3:1 Unresolved reference\nBUILD FAILED" }] },
+  );
+  const s = pipelineWithCheck();
+  s.pipeline.guards.maxRounds = 1;
+  const ledger = new MemLedger();
+  const c = new Controller(s, { provider, adapters: { fake: adapter }, observers: {}, ledger, log: () => {} });
+  await c.plan();
+  for (let i = 0; i < 30; i++) await c.tick();
+  assert.deepEqual((await c.summary()).escalated, ["n1"]);
+  assert.equal(adapter.requests.length, 5, "three implement dispatches and two critiques");
+  const state = ledger.nodes.get("n1")!;
+  assert.deepEqual(state.rounds, { "validate->implement": 1, "critique->implement": 2 });
+  assert.equal(state.round, 3, "the monotonic round still counts every loop-back");
+  const guard = ledger.events.map((e) => e.event).find((e) => e.kind === "guard-exceeded");
+  assert.ok(guard && guard.kind === "guard-exceeded");
+  assert.deepEqual(guard.exceeded, { guard: "maxRounds", limit: 1, actual: 2, nodeKey: "n1", detail: "critique->implement" });
+  assert.match(adapter.requests[1]?.context.facts["lastValidateFailure"] ?? "", /Unresolved reference/);
+});
+
+test("check failure under gradle --quiet: the JUnit XML names the test, the full output is filed as evidence", async () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.toolshed.HoldsToFulfillProjectionTest" tests="2" failures="1">
+  <testcase name="fulfilled hold leaves the list()" classname="com.toolshed.HoldsToFulfillProjectionTest" time="0.1">
+    <failure message="expected:&lt;0&gt; but was:&lt;1&gt;&#10;second line" type="AssertionError">stack</failure>
+  </testcase>
+  <testcase name="placed hold appears()" classname="com.toolshed.HoldsToFulfillProjectionTest" time="0.1"/>
+</testsuite>`;
+  const quiet = "\n12 tests completed, 1 failed\nThere were failing tests. See the report at: file:///ws/n1/build/reports/tests/test/index.html\n";
+  // implement, implement (retry), critique → node-done.
+  const adapter = new ExecAdapter([done(0.1), done(0.1), done(0.1)], {
+    "./gradlew": [{ exitCode: 1, stdout: quiet }],
+    grep: [{ exitCode: 0, stdout: "/ws/n1/build/test-results/test/TEST-com.toolshed.HoldsToFulfillProjectionTest.xml\n" }],
+    cat: [{ exitCode: 0, stdout: xml }],
+  });
+  const s = pipelineWithCheck();
+  const ledger = new MemLedger();
+  const c = new Controller(s, { provider, adapters: { fake: adapter }, observers: {}, ledger, log: () => {} });
+  await c.plan();
+  for (let i = 0; i < 12; i++) await c.tick();
+  const feedback = adapter.requests[1]?.context.facts["lastValidateFailure"] ?? "";
+  assert.match(feedback, /^\.\/gradlew test --quiet exited 1:\nFAILED com\.toolshed\.HoldsToFulfillProjectionTest\.fulfilled hold leaves the list\(\): expected:<0> but was:<1>\n/);
+  assert.match(feedback, /12 tests completed, 1 failed/);
+  assert.match(feedback, /full output: \/ev\/n1\/validate-g0r0\.log$/);
+  assert.equal(adapter.evidence.length, 1);
+  assert.match(adapter.evidence[0]!.content, /^\$ \.\/gradlew test --quiet\nexit 1\n/);
+  assert.match(adapter.evidence[0]!.content, /See the report at/);
+  const check = ledger.events.map((e) => e.event).find((e) => e.kind === "check");
+  assert.ok(check && check.kind === "check" && /FAILED com\.toolshed/.test(check.detail) && /full output:/.test(check.detail));
+});
+
+test("testResultDirs: gradle report path, explicit dir, and the bare summary fallback", async () => {
+  const { testResultDirs } = await import("./controller.js");
+  assert.deepEqual(testResultDirs("See the report at: file:///r/build/reports/tests/test/index.html"), ["/r/build/test-results/test"]);
+  assert.deepEqual(testResultDirs("wrote /r/build/test-results/integrationTest/TEST-x.xml"), ["/r/build/test-results/integrationTest/TEST-x.xml".replace("/TEST-x.xml", "")]);
+  assert.deepEqual(testResultDirs("3 tests completed, 1 failed"), ["build/test-results"]);
+  assert.deepEqual(testResultDirs("BUILD FAILED"), []);
+});
+
+test("junitFailureLines: failures and errors, unescaped, self-closing passes skipped", async () => {
+  const { junitFailureLines } = await import("./controller.js");
+  const lines = junitFailureLines(`<testsuite>
+  <testcase name="a()" classname="C"><failure message="x &amp;&amp; y &quot;q&quot;"/></testcase>
+  <testcase name="b()" classname="C"/>
+  <testcase name="c()" classname="D"><error message="boom" type="E">trace</error></testcase>
+  <testcase name="d()" classname="D"><failure type="E">no message</failure></testcase>
+</testsuite>`);
+  assert.deepEqual(lines, ['FAILED C.a(): x && y "q"', "FAILED D.c(): boom", "FAILED D.d()"]);
 });

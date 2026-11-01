@@ -82,7 +82,14 @@ export interface Finding {
 }
 
 export interface Guards {
-  /** Findings loops back to the implementer before escalation (L3). */
+  /**
+   * Retries permitted PER LOOP-BACK EDGE (a route to an earlier or the same
+   * step) before the node escalates (L3). `validate->implement` and
+   * `critique->implement` are separate budgets, so a lint slip cannot spend a
+   * findings round (scale benchmark finding 6). `maxRounds: 3` means that edge
+   * may be taken three times; the fourth escalates. maxHops still bounds the
+   * traversal as a whole.
+   */
   maxRounds: number;
   /** Total step transitions a node may execute (adopted from OpenRig). */
   maxHops: number;
@@ -104,4 +111,6 @@ export interface GuardExceeded {
   limit: number;
   actual: number;
   nodeKey: string;
+  /** What was counted — for maxRounds, the loop-back edge (`critique->implement`). */
+  detail?: string;
 }

@@ -24,7 +24,7 @@
  *     in-engagement upstreams as ordering only.
  */
 
-import type { Adapter, TaskRequest } from "../contracts/adapter.js";
+import type { Adapter, TaskRequest, WorkspaceRef } from "../contracts/adapter.js";
 import type { ExitKind } from "../contracts/core.js";
 import type {
   AcceptanceObserver,
@@ -76,6 +76,55 @@ export function failureExcerpt(output: string, opts: { maxSignal?: number; tail?
     out.push(l);
   }
   return out.join("\n");
+}
+
+/**
+ * Directories of JUnit XML a failing check named: gradle's
+ * `build/test-results/<task>` directly, or derived from the HTML report path
+ * it prints ("See the report at: file:///…/build/reports/tests/test/index.html").
+ * Under `gradle --quiet` the per-test FAILED lines are suppressed and only
+ * "N tests completed, 1 failed" survives (scale benchmark finding 11); the
+ * XML still names the test. A bare "tests completed, N failed" with no path
+ * falls back to the default `build/test-results`.
+ */
+export function testResultDirs(output: string): string[] {
+  const dirs = new Set<string>();
+  const strip = (s: string) => s.replace(/^file:\/\//, "");
+  for (const m of output.matchAll(/((?:file:\/\/)?[\w@~./-]*build\/test-results(?:\/[\w.-]+)?)/g)) dirs.add(strip(m[1]!));
+  for (const m of output.matchAll(/((?:file:\/\/)?[\w@~./-]*)build\/reports\/tests\/([\w.-]+)\/index\.html/g)) {
+    dirs.add(`${strip(m[1]!)}build/test-results/${m[2]}`);
+  }
+  if (dirs.size === 0 && /\d+ tests? completed, \d+ failed/.test(output)) dirs.add("build/test-results");
+  return [...dirs];
+}
+
+function unescapeXml(s: string): string {
+  return s
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&amp;/g, "&");
+}
+
+/** One `FAILED <class>.<test>: <message>` line per failing/erroring JUnit testcase. */
+export function junitFailureLines(xml: string): string[] {
+  const out: string[] = [];
+  const attr = (s: string, k: string): string => {
+    const m = new RegExp(`\\b${k}="([^"]*)"`).exec(s);
+    return m ? unescapeXml(m[1]!) : "";
+  };
+  for (const tc of xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
+    const f = /<(failure|error)\b([^>]*)/.exec(tc[2] ?? "");
+    if (!f) continue;
+    const cls = attr(tc[1]!, "classname");
+    const name = attr(tc[1]!, "name");
+    const msg = attr(f[2]!, "message").split("\n")[0]?.trim() ?? "";
+    out.push(`FAILED ${cls ? `${cls}.` : ""}${name}${msg ? `: ${msg}` : ""}`.slice(0, 300));
+  }
+  return out;
 }
 
 interface CheckOutcome {
@@ -229,6 +278,7 @@ export class Controller {
     delete state.parked;
     state.stepId = null;
     state.round = 0;
+    delete state.rounds;
     state.generation = (state.generation ?? 0) + 1;
     // maxHops bounds ONE traversal of the pipeline. A reopen is a new traversal
     // under a human's authority, so hops restart; the lifetime count stays on
@@ -647,12 +697,57 @@ export class Controller {
       const res = await adapter.exec(ws, cmd);
       details.push(`${cmd.join(" ")} -> ${res.exitCode} (${Math.round((Date.now() - started) / 1000)}s)`);
       if (res.exitCode !== 0) {
-        const excerpt = failureExcerpt(`${res.stdout}\n${res.stderr}`);
+        const raw = `${res.stdout}\n${res.stderr}`;
+        // Name the failing tests even when the runner's output does not
+        // (gradle --quiet): the JUnit XML it wrote still does.
+        const junit = await this.junitFailures(adapter, ws, raw);
+        const excerpt = [...junit, ...(junit.length ? [""] : []), failureExcerpt(raw)].join("\n");
+        // The excerpt is the feedback; the full output is evidence.
+        const ref = await this.persistCheckOutput(adapter, node, state, step, cmd, res.exitCode, raw);
         details.push(excerpt.split("\n")[0] ?? "");
-        return { pass: false, details, lastFailure: `${cmd.join(" ")} exited ${res.exitCode}:\n${excerpt}` };
+        if (ref) details.push(`full output: ${ref}`);
+        return {
+          pass: false,
+          details,
+          lastFailure: `${cmd.join(" ")} exited ${res.exitCode}:\n${excerpt}${ref ? `\n\nfull output: ${ref}` : ""}`,
+        };
       }
     }
     return { pass: true, details };
+  }
+
+  private async junitFailures(adapter: Adapter, ws: WorkspaceRef, output: string): Promise<string[]> {
+    const lines: string[] = [];
+    for (const dir of testResultDirs(output)) {
+      const found = await adapter.exec(ws, ["grep", "-rlE", "<(failure|error)[ >/]", dir]).catch(() => null);
+      if (!found || found.exitCode !== 0) continue; // no such dir, or nothing failed there
+      for (const file of found.stdout.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 20)) {
+        const xml = await adapter.exec(ws, ["cat", file]).catch(() => null);
+        if (!xml || xml.exitCode !== 0) continue;
+        lines.push(...junitFailureLines(xml.stdout));
+        if (lines.length >= 40) return lines.slice(0, 40);
+      }
+    }
+    return lines;
+  }
+
+  private async persistCheckOutput(
+    adapter: Adapter,
+    node: WorkNode,
+    state: NodePipelineState,
+    step: CheckStepSpec,
+    cmd: string[],
+    exitCode: number,
+    raw: string,
+  ): Promise<string | undefined> {
+    if (!adapter.recordEvidence) return undefined;
+    const name = `${step.id}-g${state.generation ?? 0}r${state.round}.log`;
+    try {
+      return await adapter.recordEvidence(node.key, name, `$ ${cmd.join(" ")}\nexit ${exitCode}\n\n${raw}`);
+    } catch (err) {
+      this.log(`${node.key}: could not persist ${step.id} output: ${(err as Error).message}`);
+      return undefined;
+    }
   }
 
   /** True while any node has a live agent task or a running check. */
@@ -716,19 +811,20 @@ export class Controller {
     if (!this.steps.has(target)) {
       throw new Error(`spec: route target "${target}" from ${fromStepId} not defined`);
     }
-    // Loop-back = a new round (bounded). Re-entering the SAME step is a
-    // round too: without the bump the retry's idempotency key would repeat
-    // and the adapter would hand back the finished task forever.
+    // Loop-back = a new round. Re-entering the SAME step is a round too:
+    // without the bump the retry's idempotency key would repeat and the
+    // adapter would hand back the finished task forever. The GUARD counts per
+    // edge: a validate→implement lint slip and a critique→implement findings
+    // loop are different budgets (benchmark: a node died at maxRounds on a
+    // ktlint slip right after a real fix).
     if (this.stepOrder.indexOf(target) <= this.stepOrder.indexOf(fromStepId)) {
       state.round += 1;
-      if (state.round >= this.spec.pipeline.guards.maxRounds) {
-        await this.guardExceeded(
-          node,
-          state,
-          "maxRounds",
-          this.spec.pipeline.guards.maxRounds,
-          state.round,
-        );
+      const edge = `${fromStepId}->${target}`;
+      const rounds = (state.rounds ??= {});
+      const taken = (rounds[edge] ?? 0) + 1;
+      rounds[edge] = taken;
+      if (taken > this.spec.pipeline.guards.maxRounds) {
+        await this.guardExceeded(node, state, "maxRounds", this.spec.pipeline.guards.maxRounds, taken, edge);
         return;
       }
     }
@@ -756,13 +852,14 @@ export class Controller {
     guard: "maxRounds" | "maxHops" | "budget" | "timeout",
     limit: number,
     actual: number,
+    detail?: string,
   ): Promise<void> {
     await this.deps.ledger.append({
       kind: "guard-exceeded",
       nodeKey: node.key,
-      exceeded: { guard, limit, actual, nodeKey: node.key },
+      exceeded: { guard, limit, actual, nodeKey: node.key, ...(detail ? { detail } : {}) },
     });
-    await this.escalate(node, state, `guard ${guard} exceeded: ${actual} vs limit ${limit}`);
+    await this.escalate(node, state, `guard ${guard} exceeded${detail ? ` on ${detail}` : ""}: ${actual} vs limit ${limit}`);
   }
 
   /**

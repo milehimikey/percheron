@@ -38,6 +38,23 @@ export interface EmConfig {
   code?: string;
   /** em binary (default "em" on PATH). */
   emBin?: string;
+  /**
+   * Overrides em's `impl/<key>` branch convention: every node builds on
+   * `<branchPrefix><key>` (`percheron/` → `percheron/fulfill-hold`). Two
+   * harnesses deriving branches from one model otherwise collide (scale
+   * benchmark finding 10: 5 of 16 ready slices lost to a paused rig's
+   * branches). The branch is written back to em's Ledger on the first
+   * transition, so `em engagement plan` reports the real one from then on.
+   */
+  branchPrefix?: string;
+}
+
+/** The branch a node builds on: em's plan value unless `branchPrefix` overrides it. */
+export function resolveBranch(
+  config: Pick<EmConfig, "branchPrefix">,
+  slice: { key: string; branch: string },
+): string {
+  return config.branchPrefix ? `${config.branchPrefix}${slice.key}` : slice.branch;
 }
 
 /** em's Ledger states — the full legal value space of NodeTransition.to. */
@@ -156,11 +173,17 @@ export class EmProvider implements Provider<EmConfig> {
         "em provider config: `model` (path to .em file) and `engagement` (slug) are required",
       );
     }
+    if (c.branchPrefix !== undefined && !(typeof c.branchPrefix === "string" && /^[\w./-]+$/.test(c.branchPrefix))) {
+      throw new Error(
+        "em provider config: `branchPrefix` must be a branch-name fragment such as `percheron/` (letters, digits, `.`, `_`, `-`, `/`)",
+      );
+    }
     return {
       model: c.model,
       engagement: c.engagement,
       ...(typeof c.code === "string" ? { code: c.code } : {}),
       ...(typeof c.emBin === "string" ? { emBin: c.emBin } : {}),
+      ...(typeof c.branchPrefix === "string" ? { branchPrefix: c.branchPrefix } : {}),
     };
   }
 
@@ -221,7 +244,7 @@ export class EmProvider implements Provider<EmConfig> {
         Object.entries({
           pattern: s.pattern,
           docStatus: s.docStatus,
-          branch: s.branch,
+          branch: resolveBranch(config, s),
           base: s.base,
           state: s.state,
           held: s.held,

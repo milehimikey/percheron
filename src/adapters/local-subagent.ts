@@ -312,6 +312,15 @@ export class LocalSubagentAdapter implements Adapter {
     if (record?.pid && pidAlive(record.pid)) process.kill(record.pid);
   }
 
+  /** Controller artefacts land beside the agents' evidence: `<stateDir>/evidence/<node>/checks/<name>`. */
+  async recordEvidence(nodeKey: string, name: string, content: string): Promise<string> {
+    const dir = join(this.cfg.stateDir, "evidence", nodeKey, "checks");
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, name.replace(/[^\w.-]/g, "_"));
+    await writeFile(file, content);
+    return file;
+  }
+
   async exec(
     ws: WorkspaceRef,
     command: string[],

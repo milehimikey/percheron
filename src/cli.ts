@@ -102,7 +102,8 @@ async function status(file: string, args: string[]): Promise<number> {
   process.stdout.write(`${rt.spec.name}: done ${summary.done.length} · parked ${summary.parked.length} · pending ${summary.pending.length} · escalated ${summary.escalated.length} · spend $${spend.toFixed(2)}\n`);
   for (const n of nodes.sort((a, b) => a.nodeKey.localeCompare(b.nodeKey))) {
     const where = n.terminal ? n.terminal.toUpperCase() : n.parked ? `parked@${n.parked.gateStepId}` : `${n.stepId ?? "-"}${n.activeTask || n.groupTasks ? " (running)" : ""}`;
-    process.stdout.write(`  ${n.nodeKey.padEnd(26)} ${where.padEnd(22)} round ${n.round} hops ${n.hops} $${(n.spend.usd ?? 0).toFixed(2)}\n`);
+    const edges = Object.entries(n.rounds ?? {}).map(([e, c]) => `${e}:${c}`).join(" ");
+    process.stdout.write(`  ${n.nodeKey.padEnd(26)} ${where.padEnd(22)} round ${n.round}${edges ? ` [${edges}]` : ""} hops ${n.hops} $${(n.spend.usd ?? 0).toFixed(2)}\n`);
   }
   return 0;
 }
