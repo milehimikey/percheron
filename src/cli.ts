@@ -47,7 +47,7 @@ async function validate(file: string, args: string[]): Promise<number> {
     const errors = v.issues.filter((i) => i.severity === "error").length;
     const warnings = v.issues.length - errors;
     process.stdout.write(
-      `${v.ok ? "ok" : "FAILED"}: ${file} — ${errors} error(s), ${warnings} warning(s)` +
+      `${v.ok ? "ok" : "FAILED"}: ${file}, ${errors} error(s), ${warnings} warning(s)` +
         (v.spec ? ` · ${v.spec.name} · ${v.spec.pipeline.steps.length} step(s), entry ${v.spec.pipeline.entry}` : "") +
         "\n" +
         (v.issues.length ? formatIssues(v.issues) + "\n" : ""),

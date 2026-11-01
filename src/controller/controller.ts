@@ -167,7 +167,7 @@ export class Controller {
           throw new Error(`spec: ${s.id} parallelWith "${other}" is not an agent step`);
         }
         if (!(o.parallelWith ?? []).includes(s.id)) {
-          throw new Error(`spec: parallel group asymmetric — ${other} must list ${s.id}`);
+          throw new Error(`spec: parallel group asymmetric: ${other} must list ${s.id}`);
         }
         if (JSON.stringify(o.on) !== JSON.stringify(s.on)) {
           throw new Error(`spec: parallel group ${s.id}/${other} must share an identical "on" map`);
@@ -293,7 +293,7 @@ export class Controller {
     await this.deps.ledger.append({ kind: "reopened", nodeKey, summary: reason });
     await this.transitionBusiness(node, state, this.spec.work.transitions?.onReopen);
     await this.deps.ledger.setNodeState(state);
-    this.log(`${nodeKey}: REOPENED by human — ${reason}`);
+    this.log(`${nodeKey}: REOPENED by human: ${reason}`);
   }
 
   /**
@@ -318,7 +318,7 @@ export class Controller {
     delete state.parked;
     if (typeof opts.feedback === "string") state.refs["lastCheckFailure"] = `human note: ${opts.feedback}`;
     await this.deps.ledger.append({ kind: "gate-rejected", nodeKey, stepId: gateStepId, summary: reason });
-    this.log(`${nodeKey}: gate ${gateStepId} REJECTED by human — ${reason}`);
+    this.log(`${nodeKey}: gate ${gateStepId} REJECTED by human: ${reason}`);
     await this.route(node, state, gateStepId, step.on["failed"] ?? "escalate");
     await this.deps.ledger.setNodeState(state);
   }
@@ -353,7 +353,7 @@ export class Controller {
         await this.deps.ledger.append({
           kind: "exited", nodeKey: node.key, stepId: "adopt:merged", exit: "done", artifacts: [],
         });
-        this.log(`${node.key}: adopted provider state "merged" — DONE`);
+        this.log(`${node.key}: adopted provider state "merged": DONE`);
         return;
       }
       if (biz === "gap") {
@@ -370,7 +370,7 @@ export class Controller {
           state.stepId = gateStep.id;
           state.parked = { gateStepId: gateStep.id, since: new Date().toISOString() };
           await this.deps.ledger.append({ kind: "gate-parked", nodeKey: node.key, stepId: gateStep.id });
-          this.log(`${node.key}: adopted provider state "awaiting-merge" — re-parked at ${gateStep.id}`);
+          this.log(`${node.key}: adopted provider state "awaiting-merge": re-parked at ${gateStep.id}`);
           return;
         }
       }
@@ -478,14 +478,14 @@ export class Controller {
     );
     if (exit !== "failed" && missing.length > 0) {
       exit = "failed";
-      this.log(`${node.key}: ${step.id} exit demoted to failed — missing artifacts: ${missing.join(", ")}`);
+      this.log(`${node.key}: ${step.id} exit demoted to failed, missing artifacts: ${missing.join(", ")}`);
     }
     // Adapter guarantee violations (workspace escape, limit hit): failed, and
     // the named violation rides into the retry as loop feedback.
     if (result.violations?.length) {
       exit = "failed";
       state.refs["lastCheckFailure"] = this.violationFeedback(step.id, result.violations);
-      this.log(`${node.key}: ${step.id} violated guarantees — ${result.violations.join("; ")}`);
+      this.log(`${node.key}: ${step.id} violated guarantees: ${result.violations.join("; ")}`);
     }
 
     // Harvest refs: a `pr` artifact's first line is the PR URL/branch ref.
@@ -590,7 +590,7 @@ export class Controller {
       if (result.violations?.length) {
         exit = "failed";
         failureFeedback.push(this.violationFeedback(m.id, result.violations));
-        this.log(`${node.key}: ${m.id} violated guarantees — ${result.violations.join("; ")}`);
+        this.log(`${node.key}: ${m.id} violated guarantees: ${result.violations.join("; ")}`);
       }
       entry.exit = exit;
       await this.deps.ledger.append({
@@ -765,7 +765,7 @@ export class Controller {
       state.parked = { gateStepId: step.id, since: new Date().toISOString() };
       await this.deps.ledger.append({ kind: "gate-parked", nodeKey: node.key, stepId: step.id });
       await this.transitionBusiness(node, state, this.spec.work.transitions?.onGateParked);
-      this.log(`${node.key}: parked at ${step.id} — ${step.gate.summary}`);
+      this.log(`${node.key}: parked at ${step.id}: ${step.gate.summary}`);
       return;
     }
     const observer = this.deps.observers[step.acceptance.observer];
@@ -918,7 +918,7 @@ export class Controller {
     delete state.activeTask;
     await this.deps.ledger.append({ kind: "escalated", nodeKey: node.key, summary });
     await this.transitionBusiness(node, state, this.spec.work.transitions?.onEscalate);
-    this.log(`${node.key}: ESCALATED — ${summary}`);
+    this.log(`${node.key}: ESCALATED: ${summary}`);
   }
 
   // ----- helpers -----
