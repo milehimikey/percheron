@@ -67,10 +67,23 @@ export interface HumanStepSpec {
 }
 
 /** v0.1: judge steps are pass-through placeholders (advisory by design). */
+/**
+ * The typed tier (L2, advisory): a rubric is scored criterion by criterion and
+ * the verdict is recorded as evidence for the human at the gate. A judge never
+ * routes: `on.done` is always taken, whatever the scores and whatever the
+ * judge task did. Scored by a read-only agent task under `role` (default
+ * `judge`), which must be bound under `roles`.
+ */
 export interface JudgeStepSpec {
   id: string;
   kind: "judge";
+  role: string;
+  /** Resolved path of the judge's node contract (default: the shipped roles/judge.md). */
+  contractRef: string;
+  /** Rubric ids as written in the spec. */
   rubrics: string[];
+  /** Resolved rubric files, one per id: `<specDir>/rubrics/<id>.md`, else the shipped `rubrics/<id>.md`. */
+  rubricRefs: string[];
   on: Partial<Record<"done", RouteTarget>>;
 }
 

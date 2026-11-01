@@ -16,6 +16,8 @@ a node usually meets them:
 | `check <step> started (N command(s))` | A check began in the worktree; the tick did not wait |
 | `check <step> PASS` or `FAIL` | All commands exited 0, or one did not |
 | `check <step> failed on N failing test(s) outside this node's diff: ...; re-running (1/1)` | The step has `retryUnrelated` and the named failures are another slice's; the command runs again before any round is spent |
+| `dispatched <judge> (<role>, rubrics <ids>) round N` | A judge task was created; read-only, scoring the rubric |
+| `judged <judge>: <rubric>: K/N criteria met, mean M` | The typed verdict was recorded; `no verdict` means the task failed or wrote nothing usable. Either way the node moves on |
 | `parked at <gate>: <summary>` | The node is waiting on a human |
 | `gate <gate> cleared by observed fact` | The observer saw the fact the gate waited for; the evidence is in the `gate-cleared` event |
 | `gate <gate> REJECTED by human: <reason>` | `percheron reject` was run |

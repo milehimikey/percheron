@@ -159,8 +159,16 @@ provider adoption of an existing `awaiting-merge` state re-parks at the first.
 
 | Key | Required | Rule |
 |---|---|---|
-| `rubrics` | yes | A non-empty list of rubric ids. |
+| `rubrics` | yes | A non-empty list of rubric ids. Each id names a file: `rubrics/<id>.md` beside the spec, or failing that the rubric percheron ships under the same name. Missing is a warning. |
+| `role` | no | The role the judge task runs under, default `judge`. It must be bound under `roles`. |
+| `contract` | no | Path to the judge's node contract. Default: the shipped `roles/judge.md`. |
 | `advisory` | no | If present, must be `true`. Judges never route. |
 | `on` | yes | Exit `done` only. |
 
-Judge steps are pass-through placeholders in 0.0.x. They are logged and move on.
+A judge step dispatches one read-only task under its role with the rubric files added to the
+end of its reading list. The task writes a `verdict` artifact: one JSON object with the
+rubric id, one entry per criterion carrying an id and a score from 0 to 1, and an optional
+summary. The controller parses it, records a `judged` event with the typed verdict, logs
+`criteria met` and the mean, and takes `on.done`. A judge task that fails, writes nothing, or
+writes something that is not a verdict is recorded as "no verdict" and the node still takes
+`on.done`. The verdict reaches no agent step; it is evidence for the human at the gate.

@@ -48,6 +48,7 @@ roles:                              # role -> executor binding (G5)
     adapter: local-subagent
     model: opus
     independence: { freshContext: true, modelNot: [implementer], blindTo: [review] }
+  judge:       { adapter: local-subagent, model: haiku }   # scores rubrics; read-only, advisory
 
 adapters:                           # adapters are code; this is their config
   local-subagent: {}

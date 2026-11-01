@@ -65,7 +65,7 @@ kind says who judges it:
 | Step kind | Who judges | Example |
 |---|---|---|
 | `check` | The controller, from exit codes. No judgment, no model. | `./gradlew test`, `em coverage --strict` |
-| `judge` | A typed rubric, advisory only. A placeholder in 0.0.x. | rubric scoring |
+| `judge` | A rubric scored criterion by criterion by a read-only task; typed, advisory, never routes | `slice-doc-quality` |
 | `agent` | An agent, exiting on the closed enum | implement, review, critique |
 | `human` | A person, observed as an external fact | merge the branch |
 

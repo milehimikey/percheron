@@ -17,7 +17,8 @@
  * spend after the fact — the post-exit guard once killed a successful run.
  *
  * Limitations, explicit:
- *   - judge steps are pass-through placeholders (logged, never routing).
+ *   - judge steps score a rubric through a read-only agent task and record the
+ *     typed verdict as evidence; advisory: `on.done` is always the route.
  *   - dispatch policy: a node dispatches when every dependsOn node is
  *     terminal-done, readiness.ready is true, and no provider hold
  *     (meta.held) is present — the conservative reading; em itself treats
@@ -30,7 +31,7 @@ import type {
   AcceptanceObserver,
   Ledger,
   NodePipelineState,
-} from "../contracts/ledger.js";
+ JudgeVerdict } from "../contracts/ledger.js";
 import type { NodeContext, Provider } from "../contracts/provider.js";
 import type { WorkGraph, WorkNode } from "../contracts/core.js";
 import type {
@@ -40,7 +41,7 @@ import type {
   HumanStepSpec,
   RouteTarget,
   StepSpec,
-} from "./spec.js";
+ JudgeStepSpec } from "./spec.js";
 
 export interface ControllerDeps {
   provider: Provider<unknown>;
@@ -144,6 +145,44 @@ export function failuresUnrelatedToDiff(junitLines: string[], changedFiles: stri
     if (related) return false;
   }
   return true;
+}
+
+/**
+ * The judge's `verdict` artifact as a typed JudgeVerdict: the first JSON object
+ * in the text (bare or inside a ```json fence) with a `rubric` string and a
+ * `criteria` list whose entries carry an `id` and a numeric `score` in [0, 1].
+ * Anything else is null: no verdict, which the controller records as such.
+ */
+export function parseJudgeVerdict(text: string): JudgeVerdict | null {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
+  const candidates = [fenced?.[1], text, text.slice(text.indexOf("{"))].filter((c): c is string => typeof c === "string");
+  for (const c of candidates) {
+    let obj: unknown;
+    try {
+      obj = JSON.parse(c.trim());
+    } catch {
+      continue;
+    }
+    if (!obj || typeof obj !== "object") continue;
+    const o = obj as Record<string, unknown>;
+    if (typeof o["rubric"] !== "string" || !Array.isArray(o["criteria"])) continue;
+    const criteria: JudgeVerdict["criteria"] = [];
+    let ok = true;
+    for (const raw of o["criteria"] as unknown[]) {
+      const r = raw as Record<string, unknown>;
+      const score = typeof r?.["score"] === "number" ? r["score"] : typeof r?.["score"] === "boolean" ? (r["score"] ? 1 : 0) : NaN;
+      if (typeof r?.["id"] !== "string" || !Number.isFinite(score) || score < 0 || score > 1) { ok = false; break; }
+      criteria.push({
+        id: r["id"],
+        score,
+        ...(typeof r["evidence"] === "string" ? { evidence: r["evidence"] } : {}),
+        ...(typeof r["note"] === "string" ? { note: r["note"] } : {}),
+      });
+    }
+    if (!ok) continue;
+    return { rubric: o["rubric"], criteria, ...(typeof o["summary"] === "string" ? { summary: o["summary"] } : {}) };
+  }
+  return null;
 }
 
 function unescapeXml(s: string): string {
@@ -460,16 +499,89 @@ export class Controller {
         await this.advanceHuman(node, state, step);
         return;
       case "judge":
-        await this.deps.ledger.append({
-          kind: "check",
-          nodeKey: node.key,
-          stepId: step.id,
-          pass: true,
-          detail: `judge pass-through (v0.1): rubrics ${step.rubrics.join(", ")} not evaluated`,
-        });
-        await this.route(node, state, step.id, step.on["done"] ?? "node-done");
+        await this.advanceJudge(node, state, step);
         return;
     }
+  }
+
+  /**
+   * The typed tier (L2): dispatch a read-only task under the judge role with
+   * the rubric files in its reading list, then read the `verdict` artifact as
+   * a typed JudgeVerdict and record it. Advisory by construction: whatever the
+   * scores, whatever the task did (failed, blocked, no artifact, bad JSON),
+   * the node takes `on.done`. The verdict is evidence for the human at the
+   * gate, not an input to any agent step: reviewers and critics still work
+   * from primary sources only.
+   */
+  private async advanceJudge(
+    node: WorkNode,
+    state: NodePipelineState,
+    step: JudgeStepSpec,
+  ): Promise<void> {
+    const role = this.spec.roles[step.role];
+    if (!role) throw new Error(`spec: role "${step.role}" has no binding`);
+    const adapter = this.adapter(role.adapter);
+
+    if (!state.activeTask) {
+      const limits = await this.dispatchLimits(node, state, 1);
+      if (!limits) return;
+      const ws = await adapter.provisionWorkspace(node.key, {
+        ...(state.refs["branch"] ? { branch: state.refs["branch"] } : {}),
+        ...(state.refs["base"] ? { base: state.refs["base"] } : {}),
+      });
+      const context: NodeContext = await this.deps.provider.nodeContext(this.providerConfig, node);
+      context.briefRefs = [...this.specBriefs(), ...context.briefRefs, ...step.rubricRefs];
+      context.facts["rubrics"] = step.rubrics.join(",");
+      state.activeTask = await adapter.createTask({
+        idempotencyKey: this.taskKey(node, state, step.id),
+        role: step.role,
+        ...(role.model ? { model: role.model } : {}),
+        contractRef: step.contractRef,
+        context,
+        workspace: ws,
+        readOnly: true,
+        produces: ["verdict"],
+        ...(Object.keys(limits).length ? { limits } : {}),
+      });
+      await this.deps.ledger.append({ kind: "dispatched", nodeKey: node.key, stepId: step.id, task: state.activeTask });
+      this.log(`${node.key}: dispatched ${step.id} (${step.role}, rubrics ${step.rubrics.join(", ")}) round ${state.round}`);
+      return;
+    }
+
+    const status = await adapter.status(state.activeTask);
+    if (status.state !== "exited") return;
+    const result = status.result;
+    delete state.activeTask;
+    for (const k of ["usd", "tokens", "wallClockMs"] as const) {
+      const v = result.spend[k];
+      if (v) state.spend[k] = (state.spend[k] ?? 0) + v;
+    }
+    await this.deps.ledger.append({ kind: "exited", nodeKey: node.key, stepId: step.id, exit: result.exit, artifacts: result.artifacts });
+
+    let verdict: JudgeVerdict | null = null;
+    let detail: string;
+    const artifact = result.artifacts.find((a) => a.kind === "verdict");
+    if (result.exit !== "done") {
+      detail = `judge task exited ${result.exit}${result.violations?.length ? ` (${result.violations.join("; ")})` : ""}: no verdict`;
+    } else if (!artifact) {
+      detail = "judge task wrote no verdict artifact: no verdict";
+    } else {
+      const { readFile } = await import("node:fs/promises");
+      const text = await readFile(artifact.ref, "utf8").catch(() => "");
+      verdict = parseJudgeVerdict(text);
+      if (verdict) {
+        const n = verdict.criteria.length;
+        const met = verdict.criteria.filter((c) => c.score >= 0.5).length;
+        const mean = n ? verdict.criteria.reduce((a, c) => a + c.score, 0) / n : 0;
+        detail = `${verdict.rubric}: ${met}/${n} criteria met, mean ${mean.toFixed(2)}${verdict.summary ? `: ${verdict.summary}` : ""}`;
+        state.refs[`verdict:${step.id}`] = artifact.ref;
+      } else {
+        detail = `verdict artifact is not a JudgeVerdict (${artifact.ref}): no verdict`;
+      }
+    }
+    await this.deps.ledger.append({ kind: "judged", nodeKey: node.key, stepId: step.id, rubrics: step.rubrics, verdict, detail });
+    this.log(`${node.key}: judged ${step.id}: ${detail}`);
+    await this.route(node, state, step.id, step.on["done"] ?? "node-done");
   }
 
   private async advanceAgent(

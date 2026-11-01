@@ -26,10 +26,16 @@
  * Static only — no live tools, no executors.
  */
 
+import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+
+/** A file percheron ships (roles/, rubrics/), resolved from the installed package, not the cwd. */
+function shippedPath(...parts: string[]): string {
+  return fileURLToPath(new URL(`../../${parts.join("/")}`, import.meta.url));
+}
 
 import { ARTIFACT_KINDS, EXIT_KINDS } from "../contracts/core.js";
 import type { ArtifactKind, ExitKind } from "../contracts/core.js";
@@ -545,12 +551,28 @@ function parseStep(ctx: Ctx, path: string, raw: unknown, config: unknown, roles:
       return step;
     }
     case "judge": {
-      if (!ctx.only(path, raw, ["id", "kind", "rubrics", "advisory", "on"], ["rubrics"])) return null;
-      if (raw["rubrics"] !== undefined && (!Array.isArray(raw["rubrics"]) || !raw["rubrics"].every(isStr) || raw["rubrics"].length === 0)) ctx.error(`${path}.rubrics`, "must be a non-empty list of rubric ids", "e.g. `rubrics: [slice-doc-quality]`.");
+      if (!ctx.only(path, raw, ["id", "kind", "role", "contract", "rubrics", "advisory", "on"], ["rubrics"])) return null;
+      const rubricsOk = Array.isArray(raw["rubrics"]) && raw["rubrics"].every(isStr) && raw["rubrics"].length > 0;
+      if (raw["rubrics"] !== undefined && !rubricsOk) ctx.error(`${path}.rubrics`, "must be a non-empty list of rubric ids", "e.g. `rubrics: [slice-doc-quality]`.");
       if (raw["advisory"] !== undefined && raw["advisory"] !== true) ctx.error(`${path}.advisory`, "judge steps are advisory by design; `advisory: false` is not implemented", "Set `advisory: true` or remove the key. A judge never blocks a failed check, and never unblocks one.");
+      const role = raw["role"] === undefined ? "judge" : raw["role"];
+      if (!isStr(role)) { ctx.error(`${path}.role`, "must name a role", "Use a role declared under `roles` (default `judge`)."); return null; }
+      if (!(role in roles)) ctx.error(`${path}.role`, `role "${role}" has no binding under \`roles\``, `Add \`${role}: { adapter: …, model: … }\` to \`roles\`; a judge is a read-only agent task scored against the rubric.`);
+      if (raw["contract"] !== undefined && !isStr(raw["contract"])) ctx.error(`${path}.contract`, "must be a path to the judge's node contract", "Omit it to use the shipped roles/judge.md.");
+      const contractRef = isStr(raw["contract"]) ? ctx.resolvePath(raw["contract"]) : shippedPath("roles", "judge.md");
+      if (!existsSync(contractRef)) ctx.warn(`${path}.contract`, `contract file not found: ${contractRef}`, "Commit the judge's node contract beside the spec, or omit `contract`.");
+      const rubrics = rubricsOk ? (raw["rubrics"] as string[]) : [];
+      const rubricRefs: string[] = [];
+      for (const id of rubrics) {
+        if (!/^[A-Za-z0-9._-]+$/.test(id)) { ctx.error(`${path}.rubrics`, `"${id}" is not a rubric id`, "Rubric ids are file stems: letters, digits, `.`, `_`, `-`; the file is rubrics/<id>.md."); continue; }
+        const local = ctx.resolvePath(`rubrics/${id}.md`);
+        const ref = existsSync(local) ? local : shippedPath("rubrics", `${id}.md`);
+        if (!existsSync(ref)) ctx.warn(`${path}.rubrics`, `rubric file not found for "${id}": ${local}`, "Write rubrics/<id>.md beside the spec (criteria with ids), or use a shipped rubric id.");
+        rubricRefs.push(ref);
+      }
       const on = parseOn(ctx, `${path}.on`, raw["on"], ["done"] as const, true);
       if (!on) return null;
-      const step: JudgeStepSpec = { id, kind: "judge", rubrics: (raw["rubrics"] as string[]) ?? [], on };
+      const step: JudgeStepSpec = { id, kind: "judge", role, contractRef, rubrics, rubricRefs, on };
       return step;
     }
     case "human": {

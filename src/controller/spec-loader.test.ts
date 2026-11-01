@@ -223,13 +223,34 @@ test("human gates need an observer and a harvested candidate ref; {pr.url} maps 
   assert.equal((docStyle.spec?.pipeline.steps[2] as { acceptance: { candidateRef: string } }).acceptance.candidateRef, "pr");
 });
 
-test("judge steps are advisory only", () => {
-  const v = check((d) => {
+test("judge steps are advisory only, run under a bound role, and resolve rubric ids to files", () => {
+  const withJudge = (d: Record<string, unknown>, step: Record<string, unknown>) => {
     const steps = (d["pipeline"] as Record<string, unknown>)["steps"] as Record<string, unknown>[];
-    steps.splice(2, 0, { id: "judge", kind: "judge", rubrics: ["q"], advisory: false, on: { done: "gate" } });
+    steps.splice(2, 0, step);
     (steps[1]!["on"] as Record<string, string>)["done"] = "judge";
+  };
+  const v = check((d) => {
+    (d["roles"] as Record<string, unknown>)["judge"] = { adapter: "local-subagent", model: "haiku" };
+    withJudge(d, { id: "judge", kind: "judge", rubrics: ["slice-doc-quality"], advisory: false, on: { done: "gate" } });
   });
   assert.deepEqual(paths(v.issues), ["pipeline.steps[2].advisory"]);
+
+  // The shipped rubric and contract resolve to real files; a default role of `judge` applies.
+  const ok = check((d) => {
+    (d["roles"] as Record<string, unknown>)["judge"] = { adapter: "local-subagent", model: "haiku" };
+    withJudge(d, { id: "judge", kind: "judge", rubrics: ["slice-doc-quality"], on: { done: "gate" } });
+  });
+  assert.deepEqual(errors(ok.issues), []);
+  const judge = ok.spec?.pipeline.steps[2];
+  assert.ok(judge && judge.kind === "judge");
+  assert.equal(judge.role, "judge");
+  assert.match(judge.contractRef, /roles\/judge\.md$/);
+  assert.match(judge.rubricRefs[0] ?? "", /rubrics\/slice-doc-quality\.md$/);
+
+  // No bound role: an error naming the fix. An unknown rubric id: a warning, not an error.
+  const noRole = check((d) => { withJudge(d, { id: "judge", kind: "judge", rubrics: ["nope"], on: { done: "gate" } }); });
+  assert.deepEqual(paths(errors(noRole.issues)), ["pipeline.steps[2].role"]);
+  assert.ok(noRole.issues.some((i) => i.severity === "warning" && i.path === "pipeline.steps[2].rubrics"));
 });
 
 test("roles must be declared under adapters when an adapters block exists", () => {

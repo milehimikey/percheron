@@ -86,3 +86,17 @@ are a good template. Things that have proved to matter:
 
 Bind the new role under `roles`, point an agent step's `contract` at the file, and declare
 the artifacts it produces from the closed registry.
+
+## The judge
+
+`roles/judge.md` is the contract for `judge` steps. The judge reads the slice doc, the
+project rules, the rubric file or files named by the step, and the diff, and scores every
+criterion in the rubric from 0 to 1 with the evidence each score rests on. It is read-only
+and never runs the suite. Its one artifact is `verdict.md`, a single JSON object, which the
+controller parses into a typed verdict and records. Nothing the judge writes routes the
+node, and no reviewer or critic sees it: the verdict is for the human at the gate.
+
+A rubric is a markdown table of criterion ids and one-sentence criteria. percheron ships
+`rubrics/slice-doc-quality.md`; a spec may put its own under `rubrics/` beside it, and a
+local file wins over a shipped one of the same name.
+

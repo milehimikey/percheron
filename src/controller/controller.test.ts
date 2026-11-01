@@ -528,3 +528,72 @@ test("ktlintReportFiles / ktlintReportLines / failuresUnrelatedToDiff", async ()
   assert.equal(failuresUnrelatedToDiff([], diff), false, "no named test: the failure is the node's");
   assert.equal(failuresUnrelatedToDiff(far, []), false, "no diff: nothing to compare against");
 });
+
+function pipelineWithJudge(): EngagementSpec {
+  const s = spec({ perNodeUsd: 50 });
+  s.roles["judge"] = { adapter: "fake", model: "haiku" };
+  s.pipeline.steps = [
+    { id: "implement", kind: "agent", role: "implementer", contractRef: "roles/implementer.md", produces: ["report"], on: { done: "judge", failed: "implement", blocked: "escalate" } },
+    { id: "judge", kind: "judge", role: "judge", contractRef: "roles/judge.md", rubrics: ["slice-doc-quality"], rubricRefs: ["/r/rubrics/slice-doc-quality.md"], on: { done: "node-done" } },
+  ];
+  return s;
+}
+
+test("judge: a read-only task scores the rubric, the typed verdict is recorded, and on.done is taken", async () => {
+  const { mkdtemp, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "percheron-judge-"));
+  const verdictPath = join(dir, "verdict.md");
+  await writeFile(verdictPath, 'Scored.\n```json\n{"rubric":"slice-doc-quality","criteria":[{"id":"fields","score":1,"evidence":"Row.kt:3"},{"id":"scenarios","score":0.5,"note":"one missing"},{"id":"observability","score":0}],"summary":"two gaps"}\n```\n');
+  const judged: TaskResult = { exit: "done", artifacts: [{ kind: "verdict", ref: verdictPath }], spend: { usd: 0.05 } };
+  const adapter = new ScriptedAdapter([done(0.1), judged]);
+  const ledger = new MemLedger();
+  const logs: string[] = [];
+  const c = new Controller(pipelineWithJudge(), { provider, adapters: { fake: adapter }, observers: {}, ledger, log: (l) => logs.push(l) });
+  await c.plan();
+  for (let i = 0; i < 8; i++) await c.tick();
+  assert.deepEqual((await c.summary()).done, ["n1"]);
+  const req = adapter.requests[1]!;
+  assert.equal(req.role, "judge");
+  assert.equal(req.model, "haiku");
+  assert.equal(req.readOnly, true);
+  assert.deepEqual(req.produces, ["verdict"]);
+  assert.ok(req.context.briefRefs.includes("/r/rubrics/slice-doc-quality.md"), "the rubric file is in the judge's reading list");
+  assert.equal(req.context.facts["rubrics"], "slice-doc-quality");
+  const ev = ledger.events.map((e) => e.event).find((e) => e.kind === "judged");
+  assert.ok(ev && ev.kind === "judged");
+  assert.deepEqual(ev.rubrics, ["slice-doc-quality"]);
+  assert.equal(ev.verdict?.criteria.length, 3);
+  assert.equal(ev.verdict?.criteria[1]?.score, 0.5);
+  assert.match(ev.detail, /^slice-doc-quality: 2\/3 criteria met, mean 0\.50: two gaps$/);
+  assert.equal(ledger.nodes.get("n1")!.refs["verdict:judge"], verdictPath);
+  assert.ok(logs.some((l) => /n1: judged judge: slice-doc-quality: 2\/3 criteria met/.test(l)));
+  assert.equal((ledger.nodes.get("n1")!.spend.usd ?? 0).toFixed(2), "0.15", "the judge's spend counts against the node");
+});
+
+test("judge: a failed judge task, or a missing or malformed verdict, records no verdict and still routes on.done", async () => {
+  const adapter = new ScriptedAdapter([done(0.1), failed(0.02, ["max-turns: run stopped at 3 turns (limit 3)"])]);
+  const ledger = new MemLedger();
+  const c = new Controller(pipelineWithJudge(), { provider, adapters: { fake: adapter }, observers: {}, ledger, log: () => {} });
+  await c.plan();
+  for (let i = 0; i < 8; i++) await c.tick();
+  assert.deepEqual((await c.summary()).done, ["n1"], "advisory: the node is done regardless");
+  assert.deepEqual((await c.summary()).escalated, []);
+  const ev = ledger.events.map((e) => e.event).find((e) => e.kind === "judged");
+  assert.ok(ev && ev.kind === "judged" && ev.verdict === null && /exited failed \(max-turns/.test(ev.detail));
+  assert.equal(ledger.nodes.get("n1")!.rounds, undefined, "no round was spent");
+});
+
+test("parseJudgeVerdict: fenced or bare JSON, boolean scores, and rejection of the malformed", async () => {
+  const { parseJudgeVerdict } = await import("./controller.js");
+  assert.deepEqual(parseJudgeVerdict('{"rubric":"r","criteria":[{"id":"a","score":true},{"id":"b","score":0.25,"note":"n"}]}'), {
+    rubric: "r",
+    criteria: [{ id: "a", score: 1 }, { id: "b", score: 0.25, note: "n" }],
+  });
+  assert.equal(parseJudgeVerdict("no json here"), null);
+  assert.equal(parseJudgeVerdict('{"rubric":"r","criteria":[{"id":"a","score":7}]}'), null, "score out of range");
+  assert.equal(parseJudgeVerdict('{"rubric":"r","criteria":[{"score":1}]}'), null, "criterion without id");
+  assert.equal(parseJudgeVerdict('{"criteria":[]}'), null, "no rubric");
+  assert.deepEqual(parseJudgeVerdict('text\n```json\n{"rubric":"x","criteria":[],"summary":"s"}\n```')?.summary, "s");
+});

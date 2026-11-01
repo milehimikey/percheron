@@ -43,10 +43,23 @@ export interface NodePipelineState {
   terminal?: "done" | "escalated";
 }
 
+/**
+ * The typed verdict a judge step records: one line per rubric criterion, a
+ * score in [0, 1] and the evidence the score rests on. Parsed from the
+ * judge task's `verdict` artifact; unparseable means no verdict, never a
+ * route.
+ */
+export interface JudgeVerdict {
+  rubric: string;
+  criteria: Array<{ id: string; score: number; evidence?: string; note?: string }>;
+  summary?: string;
+}
+
 export type LedgerEvent =
   | { kind: "dispatched"; nodeKey: string; stepId: string; task: TaskRef }
   | { kind: "exited"; nodeKey: string; stepId: string; exit: ExitKind; artifacts: Artifact[] }
   | { kind: "check"; nodeKey: string; stepId: string; pass: boolean; detail: string }
+  | { kind: "judged"; nodeKey: string; stepId: string; rubrics: string[]; verdict: JudgeVerdict | null; detail: string }
   | { kind: "gate-parked"; nodeKey: string; stepId: string }
   | { kind: "gate-cleared"; nodeKey: string; stepId: string; evidence: Artifact[] }
   | { kind: "gate-rejected"; nodeKey: string; stepId: string; summary: string }

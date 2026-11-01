@@ -12,13 +12,14 @@
 export const EXIT_KINDS = ["done", "handoff", "blocked", "failed"] as const;
 export type ExitKind = (typeof EXIT_KINDS)[number];
 
-/** The three-artifact exit contract (L5) plus the two review products. */
+/** The three-artifact exit contract (L5), the two review products, and the judge's typed verdict. */
 export const ARTIFACT_KINDS = [
   "pr",
   "findings",
   "evidenceMap",
   "continuationNote",
   "report",
+  "verdict",
 ] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
