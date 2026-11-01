@@ -114,9 +114,51 @@ died at the limit on a formatting slip right after a real fix; JUnit XML reading
 check output filed as evidence; `branchPrefix` on the em provider so two tools on one model
 stop colliding.
 
+## The rerun
+
+The five slices the first run lost to the branch collision were run on their own the next
+day, on the same spec plus `branchPrefix: percheron/`. Five nodes, one level, three at a
+time, the same budgets and guards.
+
+| | |
+|---|---|
+| Wall clock | 84 minutes |
+| Agent spend | $10.65, between $1.46 and $3.26 per node |
+| Done / escalated | 5 / 0 |
+| First validate on the slice code | 5 of 5 passed |
+| Retry rounds | 5 across two nodes, none on the other three |
+| Human gate decisions | 5 merges, 1 rejection |
+
+The branch fix did what it was built for. The first dispatch created `percheron/<key>`
+branches beside the paused rig's `impl/<key>` branches and never touched them, and the real
+branch name was written back to em's ledger.
+
+Every kind of finding the loop met, it closed without a human touching code. A critic rated
+a missing per-event log line as a constitution violation, the join failed the node, and the
+implementer fixed it and three minors in one 42-second round. A validate failure that was
+really another slice's test container timing out came back as feedback naming that test, and
+the implementer read it, said so, changed nothing, and declared done; the re-check passed. A
+formatting slip after a fix came back as a ktlint failure, and the implementer read the
+report in its own worktree and fixed the one line. At one gate the human rejected a node
+whose critic had rated the same logging gap as minor that another critic had rated major;
+`percheron reject` sent it back and the fix landed in 15 seconds.
+
+The rerun also found two defects in the first ten minutes, one in the adapter and one in
+how the operator ran it. The adapter matched the agent's closing `{"exit": ...}` with a
+regex that could not cross a brace, so a summary that mentioned `/api/neighbors/{id}/account`
+hid an honest done and cost a retry round. It now parses the declaration as JSON. And the
+operator stopped the controller with a tool that kills the whole process tree, which took a
+detached agent nine minutes into its work with it; the adapter reported the death honestly
+and the retry recovered the committed work in 30 seconds. The controller is now stopped
+with a plain kill of its own process, and a stop command that does only that is on the list.
+
+Two follow-ups came out of it. A check cannot yet tell a flake from a failure, so a container
+timeout in another slice's test costs a retry round. And ktlint's report is named in the
+feedback but not read, the same gap the JUnit reader closed for tests.
+
 ## What it did not show
 
-Eleven nodes is not hundreds. The scheduling and resume properties held at this size with
+Sixteen nodes across two runs is not hundreds. The scheduling and resume properties held at this size with
 dependencies; the hypothesis that they hold at the size of a whole event model is still a
 hypothesis. One project, one language, one provider, one adapter. The pipeline shape was
 fixed; nothing was learned about judge steps, which do not exist yet, or about more than

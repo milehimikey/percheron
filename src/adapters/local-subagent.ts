@@ -138,6 +138,40 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
+/**
+ * The agent's closing declaration, `{"exit": <kind>, "summary": "<one
+ * sentence>"}`: the LAST object in the text that parses as JSON and names a
+ * legal exit. A real parse, not a brace-free regex: summaries legitimately
+ * contain braces (`GET /api/neighbors/{id}/account`), and a regex that
+ * excluded them turned an honest `done` into a `failed` retry (rerun
+ * benchmark, my-account round 0). Null when no declaration is found, which
+ * the caller treats as `failed`.
+ */
+export function parseExitDeclaration(text: string): { exit: ExitKind; summary?: string } | null {
+  // lastIndexOf treats a negative fromIndex as 0, so a hit at index 0 must end the scan explicitly.
+  for (let at = text.lastIndexOf('"exit"'); at >= 0; at = at > 0 ? text.lastIndexOf('"exit"', at - 1) : -1) {
+    for (let start = text.lastIndexOf("{", at); start >= 0; start = start > 0 ? text.lastIndexOf("{", start - 1) : -1) {
+      for (let end = text.indexOf("}", at); end >= 0; end = text.indexOf("}", end + 1)) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text.slice(start, end + 1));
+        } catch {
+          continue; // not closed yet: try the next brace
+        }
+        const obj = parsed as { exit?: unknown; summary?: unknown };
+        if (typeof obj.exit === "string" && (EXIT_KINDS as readonly string[]).includes(obj.exit)) {
+          return {
+            exit: obj.exit as ExitKind,
+            ...(typeof obj.summary === "string" ? { summary: obj.summary } : {}),
+          };
+        }
+        break; // parsed, but not a declaration: a wider start cannot help from this one
+      }
+    }
+  }
+  return null;
+}
+
 export class LocalSubagentAdapter implements Adapter {
   private readonly cfg: Required<
     Pick<LocalSubagentConfig, "repoRoot" | "stateDir" | "claudeBin" | "confine">
@@ -509,20 +543,7 @@ export class LocalSubagentAdapter implements Adapter {
     }
 
     // The agent's own last message carries {"exit": ...}; find it in `result`.
-    let exit: ExitKind = "failed";
-    const text = String(doc["result"] ?? "");
-    const match = text.match(/\{[^{}]*"exit"[^{}]*\}/g);
-    const last = match?.at(-1);
-    if (last) {
-      try {
-        const parsed = JSON.parse(last) as { exit?: string };
-        if ((EXIT_KINDS as readonly string[]).includes(parsed.exit ?? "")) {
-          exit = parsed.exit as ExitKind;
-        }
-      } catch {
-        /* exit stays failed */
-      }
-    }
+    let exit: ExitKind = parseExitDeclaration(String(doc["result"] ?? ""))?.exit ?? "failed";
     if (doc["is_error"] === true) exit = "failed";
 
     // Limit hits are the harness's stops, named (subtype per the SDK result

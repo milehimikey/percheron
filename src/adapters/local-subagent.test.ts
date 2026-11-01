@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { LocalSubagentAdapter } from "./local-subagent.js";
+import { LocalSubagentAdapter, parseExitDeclaration } from "./local-subagent.js";
 import type { TaskRequest, TaskStatus } from "../contracts/adapter.js";
 
 const execFileAsync = promisify(execFile);
@@ -248,3 +248,24 @@ test(
     await a.releaseWorkspace(ws);
   }),
 );
+
+test("parseExitDeclaration: a real parse, so braces inside the summary do not hide the exit", () => {
+  // The rerun benchmark's my-account round 0: an honest `done` whose summary
+  // named a URL template. The old brace-free regex found nothing → `failed`.
+  const withBraces =
+    'Finished. {"exit":"done","summary":"GET /api/neighbors/{id}/account, tests cite INV-MYAC-1 to 14 (12 doesn\'t exist); committed as f05e798."}';
+  assert.deepEqual(parseExitDeclaration(withBraces), {
+    exit: "done",
+    summary: "GET /api/neighbors/{id}/account, tests cite INV-MYAC-1 to 14 (12 doesn't exist); committed as f05e798.",
+  });
+
+  // The LAST declaration wins when the transcript quotes the format first.
+  const quotedThenReal =
+    'The format is {"exit":"done"|"handoff"|"blocked"|"failed","summary":"<one sentence>"}. {"exit":"blocked","summary":"need a ruling"}';
+  assert.equal(parseExitDeclaration(quotedThenReal)?.exit, "blocked");
+
+  // Plain case still works; an illegal kind or no declaration is null (→ failed).
+  assert.equal(parseExitDeclaration('ok {"exit":"handoff","summary":"did it"}')?.exit, "handoff");
+  assert.equal(parseExitDeclaration('{"exit":"success","summary":"not a legal kind"}'), null);
+  assert.equal(parseExitDeclaration("no declaration here { } }"), null);
+});
