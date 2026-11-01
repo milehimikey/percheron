@@ -14,6 +14,8 @@ work:                               # G1 — the graph is DERIVED by the provide
   config:                           # provider-specific; em schema-checks it at plan()
     model: models/checkout.em
     engagement: checkout-2026-11
+    # branchPrefix: percheron/      # build on percheron/<key> instead of em's impl/<key>
+    #                               # (two harnesses on one model otherwise collide)
   transitions:                      # provider business states, as data
     onDispatch: building
     onGateParked: awaiting-merge
@@ -53,7 +55,7 @@ adapters:                           # adapters are code; this is their config
 pipeline:                           # per-node template, applied to every derived node
   entry: implement
   exits: [done, handoff, blocked, failed]           # closed enum (declarative confirmation)
-  guards: { maxRounds: 2, maxHops: 12 }
+  guards: { maxRounds: 2, maxHops: 12 }             # maxRounds = retries PER loop-back edge
   steps:
     - id: implement
       kind: agent
