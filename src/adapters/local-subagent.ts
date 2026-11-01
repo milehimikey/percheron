@@ -43,7 +43,7 @@
  * repeated key returns the existing task, running or finished.
  */
 
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import {
@@ -363,12 +363,17 @@ export class LocalSubagentAdapter implements Adapter {
     const [bin, ...rest] = command;
     if (!bin) throw new Error("local-subagent: exec needs a command");
     const started = Date.now();
+    const pending = execFileAsync(bin, rest, {
+      cwd: ws.location,
+      timeout: opts?.timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    // The child is ours (not detached, unlike agents): remember it so
+    // shutdown() can end it instead of orphaning a build in the worktree.
+    const child = pending.child;
+    this.execChildren.add(child);
     try {
-      const { stdout, stderr } = await execFileAsync(bin, rest, {
-        cwd: ws.location,
-        timeout: opts?.timeoutMs,
-        maxBuffer: 16 * 1024 * 1024,
-      });
+      const { stdout, stderr } = await pending;
       return { exitCode: 0, stdout, stderr, durationMs: Date.now() - started };
     } catch (err) {
       const e = err as { code?: number; stdout?: string; stderr?: string };
@@ -378,7 +383,23 @@ export class LocalSubagentAdapter implements Adapter {
         stderr: e.stderr ?? "",
         durationMs: Date.now() - started,
       };
+    } finally {
+      this.execChildren.delete(child);
     }
+  }
+
+  private readonly execChildren = new Set<ChildProcess>();
+
+  /** End running check commands; never the detached agents (see the contract). */
+  async shutdown(): Promise<void> {
+    for (const child of this.execChildren) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    }
+    this.execChildren.clear();
   }
 
   events?(ref: TaskRef): AsyncIterable<TaskEvent> {

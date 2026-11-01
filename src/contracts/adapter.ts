@@ -165,4 +165,13 @@ export interface Adapter {
    * only the excerpt (scale benchmark finding 11).
    */
   recordEvidence?(nodeKey: string, name: string, content: string): Promise<string>;
+
+  /**
+   * The controller is about to exit on purpose (`percheron stop`, SIGTERM):
+   * end what the controller's OWN process owns, which is running `exec`
+   * commands (a check's gradle client, say), and nothing else. Agent tasks
+   * are detached by design and must survive; they are collected on resume.
+   * A check that was running is simply re-run on resume.
+   */
+  shutdown?(): Promise<void>;
 }

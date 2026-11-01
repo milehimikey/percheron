@@ -502,7 +502,7 @@ function parseStep(ctx: Ctx, path: string, raw: unknown, config: unknown, roles:
       return step;
     }
     case "check": {
-      if (!ctx.only(path, raw, ["id", "kind", "run", "on"], ["run"])) return null;
+      if (!ctx.only(path, raw, ["id", "kind", "run", "retryUnrelated", "on"], ["run"])) return null;
       const run: string[][] = [];
       if (!Array.isArray(raw["run"]) || raw["run"].length === 0) {
         if (raw["run"] !== undefined) ctx.error(`${path}.run`, "must be a non-empty list of commands", "Each row is a command string (split shell-style, no shell) or an argv list.");
@@ -537,6 +537,11 @@ function parseStep(ctx: Ctx, path: string, raw: unknown, config: unknown, roles:
       const on = parseOn(ctx, `${path}.on`, raw["on"], ["done", "failed"] as const, true);
       if (!on) return null;
       const step: CheckStepSpec = { id, kind: "check", run, on };
+      const retry = raw["retryUnrelated"];
+      if (retry !== undefined) {
+        if (typeof retry === "number" && Number.isInteger(retry) && retry >= 0) step.retryUnrelated = retry;
+        else ctx.error(`${path}.retryUnrelated`, `must be a non-negative integer, got ${describe(retry)}`, "How many times a command is re-run when every failing test it names is outside the node's diff; 1 is the usual value.");
+      }
       return step;
     }
     case "judge": {

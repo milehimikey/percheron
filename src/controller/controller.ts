@@ -98,6 +98,54 @@ export function testResultDirs(output: string): string[] {
   return [...dirs];
 }
 
+/**
+ * ktlint names its report files, not its findings: "Please see the following
+ * reports:\n - <path>/ktlintMainSourceSetCheck.txt". These are the paths.
+ */
+export function ktlintReportFiles(output: string): string[] {
+  const files = new Set<string>();
+  for (const m of output.matchAll(/((?:file:\/\/)?[\w@~./-]*build\/reports\/ktlint\/[\w.-]+\/[\w.-]+\.txt)/g)) {
+    files.add(m[1]!.replace(/^file:\/\//, ""));
+  }
+  return [...files];
+}
+
+/** One `KTLINT <file>:<line>:<col>: <rule message>` per finding, ANSI colour stripped. */
+export function ktlintReportLines(text: string): string[] {
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, "");
+  const lines: string[] = [];
+  for (const raw of plain.split("\n")) {
+    const line = raw.trim();
+    if (/^\S+\.kts?:\d+:\d+:\s/.test(line)) lines.push(`KTLINT ${line}`);
+  }
+  return lines;
+}
+
+/**
+ * True when the check failed only on tests the node did not touch: every
+ * `FAILED <class>.<test>` line names a class whose package directory and
+ * whose simple name are both absent from the changed-file list. Empty
+ * inputs are never "unrelated": no named test, or no diff, means the
+ * failure is the node's until proven otherwise.
+ */
+export function failuresUnrelatedToDiff(junitLines: string[], changedFiles: string[]): boolean {
+  if (junitLines.length === 0 || changedFiles.length === 0) return false;
+  const changed = changedFiles.map((f) => f.replace(/\\/g, "/"));
+  for (const line of junitLines) {
+    const m = /^FAILED\s+([\w$.]+)\.[^.\s]/.exec(line);
+    if (!m) return false;
+    const cls = m[1]!.split("$")[0]!;
+    const parts = cls.split(".");
+    const simple = parts.pop()!;
+    const pkgDir = parts.join("/");
+    const related = changed.some(
+      (f) => f.includes(`/${simple}.`) || f.startsWith(`${simple}.`) || (pkgDir !== "" && f.includes(`${pkgDir}/`)),
+    );
+    if (related) return false;
+  }
+  return true;
+}
+
 function unescapeXml(s: string): string {
   return s
     .replace(/&quot;/g, '"')
@@ -252,6 +300,18 @@ export class Controller {
       await new Promise((r) => setTimeout(r, pollMs));
     }
     return this.summary();
+  }
+
+  /**
+   * Deliberate exit (`percheron stop`, SIGTERM): give every adapter the chance
+   * to end what the controller's own process owns. Agents are not touched;
+   * running checks are re-run on resume. The ledger needs nothing: every
+   * state change was written through when it happened.
+   */
+  async shutdown(): Promise<void> {
+    for (const adapter of new Set(Object.values(this.deps.adapters))) {
+      await adapter.shutdown?.().catch((err: unknown) => this.log(`shutdown: ${(err as Error).message}`));
+    }
   }
 
   /**
@@ -693,15 +753,31 @@ export class Controller {
     const details: string[] = [];
     for (const argv of step.run) {
       const cmd = argv.map((a) => a.replaceAll("{key}", node.key));
-      const started = Date.now();
-      const res = await adapter.exec(ws, cmd);
-      details.push(`${cmd.join(" ")} -> ${res.exitCode} (${Math.round((Date.now() - started) / 1000)}s)`);
-      if (res.exitCode !== 0) {
+      for (let attempt = 0; ; attempt++) {
+        const started = Date.now();
+        const res = await adapter.exec(ws, cmd);
+        details.push(`${cmd.join(" ")} -> ${res.exitCode} (${Math.round((Date.now() - started) / 1000)}s)`);
+        if (res.exitCode === 0) break;
         const raw = `${res.stdout}\n${res.stderr}`;
         // Name the failing tests even when the runner's output does not
-        // (gradle --quiet): the JUnit XML it wrote still does.
+        // (gradle --quiet): the JUnit XML it wrote still does. Same for the
+        // lint report ktlint points at instead of printing.
         const junit = await this.junitFailures(adapter, ws, raw);
-        const excerpt = [...junit, ...(junit.length ? [""] : []), failureExcerpt(raw)].join("\n");
+        const lint = await this.lintFailures(adapter, ws, raw);
+        const named = [...junit, ...lint];
+        // The flake rule: every failing test outside this node's diff, and
+        // the spec allows a re-run → run it again before spending a round.
+        if (attempt < (step.retryUnrelated ?? 0) && lint.length === 0) {
+          const changed = await this.changedFiles(adapter, ws, state);
+          if (failuresUnrelatedToDiff(junit, changed)) {
+            const note = `${junit.length} failing test(s) outside this node's diff: ${junit.map((l) => l.split(":")[0]!.replace(/^FAILED\s+/, "")).join(", ")}`;
+            details.push(`${note}; re-running (${attempt + 1}/${step.retryUnrelated})`);
+            this.log(`${node.key}: check ${step.id} failed on ${note}; re-running (${attempt + 1}/${step.retryUnrelated})`);
+            await this.persistCheckOutput(adapter, node, state, step, cmd, res.exitCode, raw, `-try${attempt + 1}`);
+            continue;
+          }
+        }
+        const excerpt = [...named, ...(named.length ? [""] : []), failureExcerpt(raw)].join("\n");
         // The excerpt is the feedback; the full output is evidence.
         const ref = await this.persistCheckOutput(adapter, node, state, step, cmd, res.exitCode, raw);
         details.push(excerpt.split("\n")[0] ?? "");
@@ -714,6 +790,25 @@ export class Controller {
       }
     }
     return { pass: true, details };
+  }
+
+  private async lintFailures(adapter: Adapter, ws: WorkspaceRef, output: string): Promise<string[]> {
+    const lines: string[] = [];
+    for (const file of ktlintReportFiles(output).slice(0, 10)) {
+      const txt = await adapter.exec(ws, ["cat", file]).catch(() => null);
+      if (!txt || txt.exitCode !== 0) continue;
+      lines.push(...ktlintReportLines(txt.stdout));
+      if (lines.length >= 40) return lines.slice(0, 40);
+    }
+    return lines;
+  }
+
+  /** Files the node changed against its base, working tree included; empty when git cannot say. */
+  private async changedFiles(adapter: Adapter, ws: WorkspaceRef, state: NodePipelineState): Promise<string[]> {
+    const base = state.refs["base"] ?? "main";
+    const res = await adapter.exec(ws, ["git", "diff", "--name-only", base]).catch(() => null);
+    if (!res || res.exitCode !== 0) return [];
+    return res.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
   }
 
   private async junitFailures(adapter: Adapter, ws: WorkspaceRef, output: string): Promise<string[]> {
@@ -739,9 +834,10 @@ export class Controller {
     cmd: string[],
     exitCode: number,
     raw: string,
+    suffix = "",
   ): Promise<string | undefined> {
     if (!adapter.recordEvidence) return undefined;
-    const name = `${step.id}-g${state.generation ?? 0}r${state.round}.log`;
+    const name = `${step.id}-g${state.generation ?? 0}r${state.round}${suffix}.log`;
     try {
       return await adapter.recordEvidence(node.key, name, `$ ${cmd.join(" ")}\nexit ${exitCode}\n\n${raw}`);
     } catch (err) {

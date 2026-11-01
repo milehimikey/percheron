@@ -440,3 +440,91 @@ test("junitFailureLines: failures and errors, unescaped, self-closing passes ski
 </testsuite>`);
   assert.deepEqual(lines, ['FAILED C.a(): x && y "q"', "FAILED D.c(): boom", "FAILED D.d()"]);
 });
+
+test("retryUnrelated: a failure naming only tests outside the node's diff is re-run once, and a passing re-run spends no round", async () => {
+  const xml = `<testsuite name="com.toolshed.placehold.PlaceHoldEndpointTest" tests="1" failures="0" errors="1">
+  <testcase name="initializationError" classname="com.toolshed.placehold.PlaceHoldEndpointTest" time="0">
+    <error message="ConditionTimeoutException: Axon Server container" type="E">trace</error>
+  </testcase>
+</testsuite>`;
+  const quiet = "\n975 tests completed, 1 failed\nSee the report at: file:///ws/n1/build/reports/tests/test/index.html\nBUILD FAILED in 20m 45s\n";
+  // implement, critique → node-done; the second gradlew call passes.
+  const adapter = new ExecAdapter([done(0.1), done(0.1)], {
+    "./gradlew": [{ exitCode: 1, stdout: quiet }, { exitCode: 0, stdout: "" }],
+    grep: [{ exitCode: 0, stdout: "/ws/n1/build/test-results/test/TEST-com.toolshed.placehold.PlaceHoldEndpointTest.xml\n" }],
+    cat: [{ exitCode: 0, stdout: xml }],
+    git: [{ exitCode: 0, stdout: "src/main/kotlin/com/toolshed/myaccount/MyAccountProjection.kt\nsrc/test/kotlin/com/toolshed/myaccount/MyAccountProjectionTest.kt\n" }],
+  });
+  const s = pipelineWithCheck();
+  const validate = s.pipeline.steps.find((st) => st.id === "validate")!;
+  assert.equal(validate.kind, "check");
+  if (validate.kind === "check") validate.retryUnrelated = 1;
+  const ledger = new MemLedger();
+  const logs: string[] = [];
+  const c = new Controller(s, { provider, adapters: { fake: adapter }, observers: {}, ledger, log: (l) => logs.push(l) });
+  await c.plan();
+  for (let i = 0; i < 12; i++) await c.tick();
+  assert.deepEqual((await c.summary()).done, ["n1"]);
+  assert.equal(adapter.requests.length, 2, "implement and critique only: no retry round was spent");
+  assert.equal(ledger.nodes.get("n1")!.rounds, undefined);
+  assert.ok(logs.some((l) => /check validate failed on 1 failing test\(s\) outside this node's diff: com\.toolshed\.placehold\.PlaceHoldEndpointTest\.initializationError; re-running \(1\/1\)/.test(l)), logs.join("\n"));
+  assert.deepEqual(adapter.evidence.map((e) => e.name), ["validate-g0r0-try1.log"], "the first attempt's output is still filed");
+  const check = ledger.events.map((e) => e.event).find((e) => e.kind === "check");
+  assert.ok(check && check.kind === "check" && check.pass && /re-running \(1\/1\)/.test(check.detail));
+});
+
+test("retryUnrelated: a failure that names a test the diff touches is routed as failed at once", async () => {
+  const xml = `<testsuite><testcase name="t()" classname="com.toolshed.myaccount.MyAccountProjectionTest"><failure message="nope"/></testcase></testsuite>`;
+  const quiet = "\n3 tests completed, 1 failed\n";
+  const adapter = new ExecAdapter([done(0.1), done(0.1), done(0.1)], {
+    "./gradlew": [{ exitCode: 1, stdout: quiet }, { exitCode: 0, stdout: "" }],
+    grep: [{ exitCode: 0, stdout: "build/test-results/TEST-x.xml\n" }],
+    cat: [{ exitCode: 0, stdout: xml }],
+    git: [{ exitCode: 0, stdout: "src/main/kotlin/com/toolshed/myaccount/MyAccountProjection.kt\n" }],
+  });
+  const s = pipelineWithCheck();
+  const validate = s.pipeline.steps.find((st) => st.id === "validate")!;
+  if (validate.kind === "check") validate.retryUnrelated = 1;
+  const ledger = new MemLedger();
+  const c = new Controller(s, { provider, adapters: { fake: adapter }, observers: {}, ledger, log: () => {} });
+  await c.plan();
+  for (let i = 0; i < 14; i++) await c.tick();
+  assert.equal(adapter.requests.length, 3, "implement, implement (retry), critique");
+  assert.deepEqual(ledger.nodes.get("n1")!.rounds, { "validate->implement": 1 });
+  assert.match(adapter.requests[1]?.context.facts["lastValidateFailure"] ?? "", /FAILED com\.toolshed\.myaccount\.MyAccountProjectionTest\.t\(\): nope/);
+});
+
+test("ktlint: the report file is read and its findings ride into the feedback as KTLINT lines", async () => {
+  const out = "\nFAILURE: Build failed with an exception.\n* What went wrong:\nExecution failed for task ':ktlintMainSourceSetCheck'.\n   > KtLint found code style violations. Please see the following reports:\n     - /ws/n1/build/reports/ktlint/ktlintMainSourceSetCheck/ktlintMainSourceSetCheck.txt\n";
+  const report = "\x1b[90msrc/main/kotlin/com/toolshed/toolinventory/\x1b[0mToolInventoryProjection.kt\x1b[90m:\x1b[0m38\x1b[90m:22:\x1b[0m Newline expected after opening brace \x1b[90m(standard:function-literal)\x1b[0m\n\nSummary error count (descending) by rule:\n  standard:function-literal: 1\n";
+  const adapter = new ExecAdapter([done(0.1), done(0.1), done(0.1)], {
+    "./gradlew": [{ exitCode: 1, stdout: out }],
+    cat: [{ exitCode: 0, stdout: report }],
+  });
+  const s = pipelineWithCheck();
+  const ledger = new MemLedger();
+  const c = new Controller(s, { provider, adapters: { fake: adapter }, observers: {}, ledger, log: () => {} });
+  await c.plan();
+  for (let i = 0; i < 12; i++) await c.tick();
+  const feedback = adapter.requests[1]?.context.facts["lastValidateFailure"] ?? "";
+  assert.match(feedback, /^\.\/gradlew test --quiet exited 1:\nKTLINT src\/main\/kotlin\/com\/toolshed\/toolinventory\/ToolInventoryProjection\.kt:38:22: Newline expected after opening brace \(standard:function-literal\)\n/);
+  assert.doesNotMatch(feedback, /\x1b/);
+});
+
+test("ktlintReportFiles / ktlintReportLines / failuresUnrelatedToDiff", async () => {
+  const { ktlintReportFiles, ktlintReportLines, failuresUnrelatedToDiff } = await import("./controller.js");
+  assert.deepEqual(ktlintReportFiles("reports:\n - /r/build/reports/ktlint/ktlintTestSourceSetCheck/ktlintTestSourceSetCheck.txt\n - file:///r/build/reports/ktlint/a/a.txt"), [
+    "/r/build/reports/ktlint/ktlintTestSourceSetCheck/ktlintTestSourceSetCheck.txt",
+    "/r/build/reports/ktlint/a/a.txt",
+  ]);
+  assert.deepEqual(ktlintReportFiles("BUILD FAILED"), []);
+  assert.deepEqual(ktlintReportLines("A.kt:1:2: msg (standard:x)\nnot a finding\nb/B.kts:3:4: other\n"), ["KTLINT A.kt:1:2: msg (standard:x)", "KTLINT b/B.kts:3:4: other"]);
+  const far = ["FAILED com.toolshed.placehold.PlaceHoldEndpointTest.initializationError: timeout"];
+  const diff = ["src/main/kotlin/com/toolshed/myaccount/MyAccountProjection.kt"];
+  assert.equal(failuresUnrelatedToDiff(far, diff), true);
+  assert.equal(failuresUnrelatedToDiff(["FAILED com.toolshed.myaccount.MyAccountProjectionTest.t(): x"], diff), false, "same package as the diff");
+  assert.equal(failuresUnrelatedToDiff(["FAILED com.other.MyAccountProjection.t(): x"], diff), false, "same simple name as a changed file");
+  assert.equal(failuresUnrelatedToDiff(["FAILED com.toolshed.placehold.Outer$Inner.t(): x"], diff), true, "nested class uses the outer file");
+  assert.equal(failuresUnrelatedToDiff([], diff), false, "no named test: the failure is the node's");
+  assert.equal(failuresUnrelatedToDiff(far, []), false, "no diff: nothing to compare against");
+});

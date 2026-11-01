@@ -7,6 +7,7 @@
  *   percheron status   <engagement.yaml> [--json]
  *   percheron reopen   <engagement.yaml> <node> --reason "<why>"
  *   percheron reject   <engagement.yaml> <node> --reason "<why>" [--feedback "<note>"]
+ *   percheron stop     <engagement.yaml>
  *
  * validate: static spec validation — ok/issues with severity, exact field path
  *   and the fixing action. Exit 0 ok (warnings allowed), 1 errors, 2 usage.
@@ -15,12 +16,16 @@
  *   rerun with the same spec and the same ledger continues. `--plan` derives
  *   and prints the graph without dispatching; `--once` runs a single tick.
  * status: the ledger's per-node view plus the settle summary.
+ * stop: end the running controller for this spec and nothing else. Agents are
+ *   detached and keep running; a running check is re-run on resume.
  */
 
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { formatIssues, validateSpecFile } from "./controller/spec-loader.js";
 import type { NodePipelineState } from "./contracts/ledger.js";
+import { readPidFile, removePidFile, stopPid, writePidFile } from "./pidfile.js";
 import { buildRuntime } from "./run.js";
 
 const USAGE = [
@@ -30,6 +35,7 @@ const USAGE = [
   "  percheron status   <engagement.yaml> [--json]",
   "  percheron reopen   <engagement.yaml> <node> --reason \"<why>\" [--feedback \"<note for the retry>\" | --clear-feedback]   (controller stopped)",
   "  percheron reject   <engagement.yaml> <node> --reason \"<why>\" [--feedback \"<note for the retry>\"]   (parked gate; controller stopped)",
+  "  percheron stop     <engagement.yaml>                  (ends the controller only; agents keep running)",
   "",
 ].join("\n");
 
@@ -78,9 +84,50 @@ async function run(file: string, args: string[]): Promise<number> {
   }
   const pollMs = Number(flag(args, "--poll-ms") ?? 5000);
   const maxTicks = Number(flag(args, "--max-ticks") ?? 100000);
-  const summary = await rt.controller.runUntilSettled({ pollMs, maxTicks });
-  process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
-  return summary.escalated.length ? 1 : 0;
+  const pidPath = pidFile(rt.stateDir, rt.spec.name);
+  const other = await readPidFile(pidPath);
+  if (other !== null) {
+    process.stderr.write(`percheron: a controller for ${rt.spec.name} is already running (pid ${other}); \`percheron stop\` it first\n`);
+    return 1;
+  }
+  await writePidFile(pidPath, process.pid);
+  // `percheron stop` / Ctrl-C: end our own check commands, leave the agents,
+  // exit. The ledger is already up to date; resume picks everything back up.
+  const stop = (signal: string) => {
+    process.stderr.write(`[percheron] ${signal}: stopping the controller; agents keep running, checks re-run on resume\n`);
+    void rt.controller.shutdown().finally(() => removePidFile(pidPath).finally(() => process.exit(0)));
+  };
+  process.once("SIGTERM", () => stop("SIGTERM"));
+  process.once("SIGINT", () => stop("SIGINT"));
+  try {
+    const summary = await rt.controller.runUntilSettled({ pollMs, maxTicks });
+    process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
+    return summary.escalated.length ? 1 : 0;
+  } finally {
+    await removePidFile(pidPath);
+  }
+}
+
+function pidFile(stateDir: string, name: string): string {
+  return join(stateDir, `controller-${name}.pid`);
+}
+
+async function stop(file: string): Promise<number> {
+  const rt = await buildRuntime(file, { log: () => {} });
+  const pidPath = pidFile(rt.stateDir, rt.spec.name);
+  const pid = await readPidFile(pidPath);
+  if (pid === null) {
+    process.stdout.write(`${rt.spec.name}: no controller running\n`);
+    return 0;
+  }
+  const outcome = await stopPid(pid);
+  if (outcome === "stopped") {
+    await removePidFile(pidPath);
+    process.stdout.write(`${rt.spec.name}: controller ${pid} stopped; agents keep running, resume with \`percheron run\`\n`);
+    return 0;
+  }
+  process.stderr.write(`${rt.spec.name}: controller ${pid} did not exit within 15s; it may be mid-write. Try again, then \`kill ${pid}\`\n`);
+  return 1;
 }
 
 async function status(file: string, args: string[]): Promise<number> {
@@ -99,7 +146,8 @@ async function status(file: string, args: string[]): Promise<number> {
     return 0;
   }
   const spend = nodes.reduce((a, n) => a + (n.spend.usd ?? 0), 0);
-  process.stdout.write(`${rt.spec.name}: done ${summary.done.length} · parked ${summary.parked.length} · pending ${summary.pending.length} · escalated ${summary.escalated.length} · spend $${spend.toFixed(2)}\n`);
+  const pid = await readPidFile(pidFile(rt.stateDir, rt.spec.name));
+  process.stdout.write(`${rt.spec.name}: done ${summary.done.length} · parked ${summary.parked.length} · pending ${summary.pending.length} · escalated ${summary.escalated.length} · spend $${spend.toFixed(2)} · controller ${pid === null ? "not running" : `running (pid ${pid})`}\n`);
   for (const n of nodes.sort((a, b) => a.nodeKey.localeCompare(b.nodeKey))) {
     const where = n.terminal ? n.terminal.toUpperCase() : n.parked ? `parked@${n.parked.gateStepId}` : `${n.stepId ?? "-"}${n.activeTask || n.groupTasks ? " (running)" : ""}`;
     const edges = Object.entries(n.rounds ?? {}).map(([e, c]) => `${e}:${c}`).join(" ");
@@ -152,6 +200,8 @@ async function main(argv: string[]): Promise<number> {
       return reopen(file, rest);
     case "reject":
       return reject(file, rest);
+    case "stop":
+      return stop(file);
     default:
       process.stderr.write(USAGE);
       return 2;

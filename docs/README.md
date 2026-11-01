@@ -19,4 +19,4 @@ Read in this order if you are new:
 7. [Benchmark: toolshed, October 2026](benchmark-toolshed-2026-10.md). The one real run so
    far, with numbers and what it changed.
 
-Version: these pages describe percheron 0.0.2. The spec format is `0.2` and will change.
+Version: these pages describe percheron 0.0.3. The spec format is `0.2` and will change.

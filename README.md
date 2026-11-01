@@ -7,7 +7,7 @@ they act. It sits above any agent harness, local or cloud.
 
 Named for the draft workhorse breed: the animal harnesses exist for, and they pull in teams.
 
-**Status: 0.0.2.** It runs, it has been benchmarked twice on a real codebase, and the
+**Status: 0.0.3.** It runs, it has been benchmarked twice on a real codebase, and the
 documentation is new. Expect the spec format and the contracts to move. The first work
 provider is [em](https://github.com/milehimikey/em), the event modeling CLI, because an
 event model with hundreds of slices is the canonical case. Providers are pluggable;
@@ -46,6 +46,7 @@ percheron run      engagement.yaml            # drives until settled; resumable
 percheron status   engagement.yaml
 percheron reopen   engagement.yaml <node> --reason "..." [--feedback "..."]   # un-escalate
 percheron reject   engagement.yaml <node> --reason "..." [--feedback "..."]   # say no at a gate
+percheron stop     engagement.yaml            # end the controller only; agents keep running
 ```
 
 `examples/em-engagement.yaml` is the canonical spec, commented. Agent steps run through the

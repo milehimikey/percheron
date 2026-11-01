@@ -121,9 +121,14 @@ is bounded by `maxRounds`.
 | Key | Required | Rule |
 |---|---|---|
 | `run` | yes | A non-empty list of commands. Each is an argv list, or a string split shell-style with no shell at run time. `{node.key}` is replaced at run time. `{config.<path>}` is replaced at load time from `work.config` and must resolve to a scalar. Any other brace placeholder is an error. |
+| `retryUnrelated` | no | A non-negative integer, default 0. When a command fails and every test it names as failing lies outside the node's diff, the command is run again, up to this many times, before the failure is routed. 1 is the usual value. |
 | `on` | yes | Exits `done` and `failed`. All commands exit 0 means `done`. |
 
 Commands run in the node's worktree, so paths are relative to it.
+
+A failing test is outside the diff when neither its package directory nor its class name
+appears in any file the node changed against its base. A failure that names no test, or a
+lint failure, is always the node's own and is never re-run.
 
 ### kind: agent
 

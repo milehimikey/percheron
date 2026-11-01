@@ -1,4 +1,4 @@
-# engagement.yaml — canonical em case, spec-format v0.2.
+# engagement.yaml: canonical em case, spec-format v0.2.
 # Validate: `percheron validate examples/em-engagement.yaml`
 # Relative paths (goalSpec, briefing, contract) resolve against this file's directory.
 specVersion: "0.2"
@@ -6,10 +6,10 @@ specVersion: "0.2"
 engagement:
   name: checkout-2026-11
   mode: build
-  goalSpec: ./goal-spec.md          # S1 — signed-off, committed beside the spec
-  briefing: ./briefing.md           # S2 — read first by every agent step
+  goalSpec: ./goal-spec.md          # S1: signed-off, committed beside the spec
+  briefing: ./briefing.md           # S2: read first by every agent step
 
-work:                               # G1 — the graph is DERIVED by the provider
+work:                               # G1: the graph is DERIVED by the provider
   provider: em
   config:                           # provider-specific; em schema-checks it at plan()
     model: models/checkout.em
@@ -22,13 +22,13 @@ work:                               # G1 — the graph is DERIVED by the provide
     onGateCleared: merged
     onEscalate: held
 
-tools:                              # S4 pins — carried for the host's CI check
+tools:                              # S4 pins: carried for the host's CI check
   em: ">=1.19.5 <2.0.0"
   schemas:
     engagementPlan: ">=1.4"
     validateSliceReady: ">=1.5"
 
-policy:                             # S3 — only implemented values validate
+policy:                             # S3: only implemented values validate
   ratifiers: [mikey]
   mergeAuthority: human
   exceptionRouting: human_only
@@ -36,7 +36,7 @@ policy:                             # S3 — only implemented values validate
     perNode: { usd: 15, dispatchFloorUsd: 0.5 }       # checked AT DISPATCH
     perTask: { usd: 6, maxTurns: 80, wallClock: 20m } # enforced by the adapter
 
-scheduling:                         # G2 — no level barriers
+scheduling:                         # G2: no level barriers
   dispatchWhen: upstreamsMerged && ready
   maxConcurrent: 4
   levels: orderingHintOnly
@@ -69,9 +69,10 @@ pipeline:                           # per-node template, applied to every derive
       run:
         - em validate {config.model} --slice-ready {node.key} --json
         - ["./gradlew", "test", "--quiet"]
+      retryUnrelated: 1               # a shared-suite flake outside this node's diff is re-run once before it costs a round
       on: { done: judge, failed: implement }
 
-    - id: judge                     # typed tier — advisory, never routing
+    - id: judge                     # typed tier: advisory, never routing
       kind: judge
       rubrics: [slice-doc-quality]
       advisory: true
@@ -95,7 +96,7 @@ pipeline:                           # per-node template, applied to every derive
       produces: [findings]
       on: { done: merge-gate, failed: implement, blocked: escalate }
 
-    - id: merge-gate                # G3 — durable interrupt, woken by an observed fact
+    - id: merge-gate                # G3: durable interrupt, woken by an observed fact
       kind: human
       gate:
         summary: "Slice ready: validate PASS, review and critique done"

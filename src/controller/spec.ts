@@ -41,6 +41,14 @@ export interface CheckStepSpec {
    * `exec` (adapter-located, controller-judged).
    */
   run: string[][];
+  /**
+   * Re-run a failing command up to this many times when every test it names
+   * as failing lies outside the node's diff (another slice's test timing out
+   * on a shared container, say). 0 or absent: every failure is the node's.
+   * A re-run that fails again, or a failure that names no test, or one that
+   * names a test the diff touches, is routed as `failed` at once.
+   */
+  retryUnrelated?: number;
   on: Partial<Record<"done" | "failed", RouteTarget>>;
 }
 

@@ -15,6 +15,7 @@ a node usually meets them:
 | `<step> exited <exit> (N artifact(s))` | The agent's final message was collected |
 | `check <step> started (N command(s))` | A check began in the worktree; the tick did not wait |
 | `check <step> PASS` or `FAIL` | All commands exited 0, or one did not |
+| `check <step> failed on N failing test(s) outside this node's diff: ...; re-running (1/1)` | The step has `retryUnrelated` and the named failures are another slice's; the command runs again before any round is spent |
 | `parked at <gate>: <summary>` | The node is waiting on a human |
 | `gate <gate> cleared by observed fact` | The observer saw the fact the gate waited for; the evidence is in the `gate-cleared` event |
 | `gate <gate> REJECTED by human: <reason>` | `percheron reject` was run |
@@ -95,6 +96,13 @@ unparked at once. A node counts from the tick it enters the pipeline, one tick b
 first task exists. Parked nodes do not count. Within a node, a parallel group dispatches
 all its members at once.
 
+**Re-runs** are `retryUnrelated` on a check step. A test suite shared by many slices fails
+for reasons that are nobody's: a test container that did not come up in time, a port in use.
+With `retryUnrelated: 1`, a failure whose named tests all lie outside the node's diff is run
+once more before it costs an implement round. The first attempt's output is still filed as
+evidence with a `-try1` suffix. A failure that names no test, names a test in a package the
+node changed, or is a lint failure, is never re-run.
+
 **Dispatch** requires every `dependsOn` node to be done, the provider to report the node
 ready, no provider hold on the node, and a free slot. A held node is never dispatched; the
 reason is shown in `run --plan`.
@@ -162,3 +170,6 @@ main checkout to diff against it. That is the harness doing its job.
 | Every validate takes a quarter of an hour | Cold compile and a full suite per worktree | Share a build cache across worktrees, or add a cheaper check before the full suite |
 | Agent output full of permission denials | Confinement | Normal. Only a quarantine entry means something actually escaped |
 | `percheron: ... is not parked` / `is not escalated` | reopen and reject apply to specific states | Check `status`; reject needs a parked node, reopen an escalated one |
+| Validate fails on a test in another slice's package | A shared test container or port, not this node's code | Set `retryUnrelated: 1` on the check; the implementer otherwise gets the failure as feedback and can declare done without changes |
+| Feedback says `KtLint found code style violations` with a path | ktlint writes findings to a report file | Nothing to do: the `KTLINT file:line:col` lines above it are read from that file |
+| `a controller for <name> is already running (pid N)` | A second `run` on the same engagement, or a controller you thought was gone | `percheron stop`, or `percheron status` to see the pid |

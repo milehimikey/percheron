@@ -353,9 +353,21 @@ Both commands require the controller to be stopped. The ledger has one writer.
 
 ## Step 9: stop and resume
 
-Stop the controller with Ctrl-C at any time. Nothing is lost: pipeline state is written
-through to the ledger on every change, each task has a record on disk, and a running
-`claude` process keeps running and writes its result to its task record.
+Stop the controller from another terminal:
+
+```
+percheron stop engagement.yaml
+```
+
+Ctrl-C in its own terminal does the same. Either way the controller ends the check commands
+it was running itself, leaves every agent alone, removes its pid file and exits. Nothing is
+lost: pipeline state is written through to the ledger on every change, each task has a
+record on disk, and a running `claude` process keeps running and writes its result to its
+task record. Do not stop it with anything that kills a whole process tree; that reaches the
+agents too, and the retry then has to recover their work from what they committed.
+
+`percheron status` shows whether a controller is running and its pid, and `percheron run`
+refuses to start a second one for the same engagement.
 
 Start it again with the same command. It reloads the ledger, re-derives the graph from the
 provider, and continues. A finished task is handed back, not repeated, because dispatches
