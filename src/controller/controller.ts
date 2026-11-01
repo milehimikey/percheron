@@ -246,6 +246,33 @@ export class Controller {
     this.log(`${nodeKey}: REOPENED by human — ${reason}`);
   }
 
+  /**
+   * Operator action: the human at a PARKED gate says no. The gate's `failed`
+   * route is taken (the spec decides: usually `escalate`, so a `reopen` with
+   * feedback follows), the reason is recorded, and an optional note replaces
+   * the recorded failure so the retry knows what the human rejected. The
+   * observer never clears a gate the human has rejected: the node leaves the
+   * parked state here. Run it while the controller is stopped.
+   */
+  async rejectGate(nodeKey: string, reason: string, opts: { feedback?: string } = {}): Promise<void> {
+    if (!this.graph) await this.plan();
+    const node = this.graph.nodes.find((n) => n.key === nodeKey);
+    if (!node) throw new Error(`reject: "${nodeKey}" is not a node of this engagement`);
+    const state = (await this.nodeStates()).get(nodeKey);
+    if (!state?.parked) {
+      throw new Error(`reject: "${nodeKey}" is not parked at a gate (${state?.terminal ?? state?.stepId ?? "never started"})`);
+    }
+    const step = this.steps.get(state.parked.gateStepId);
+    if (!step || step.kind !== "human") throw new Error(`reject: gate step "${state.parked.gateStepId}" is not a human step`);
+    const gateStepId = state.parked.gateStepId;
+    delete state.parked;
+    if (typeof opts.feedback === "string") state.refs["lastCheckFailure"] = `human note: ${opts.feedback}`;
+    await this.deps.ledger.append({ kind: "gate-rejected", nodeKey, stepId: gateStepId, summary: reason });
+    this.log(`${nodeKey}: gate ${gateStepId} REJECTED by human — ${reason}`);
+    await this.route(node, state, gateStepId, step.on["failed"] ?? "escalate");
+    await this.deps.ledger.setNodeState(state);
+  }
+
   async summary(): Promise<SettleSummary> {
     const states = await this.nodeStates();
     const out: SettleSummary = { done: [], escalated: [], parked: [], pending: [] };

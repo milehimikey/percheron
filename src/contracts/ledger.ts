@@ -47,6 +47,7 @@ export type LedgerEvent =
   | { kind: "check"; nodeKey: string; stepId: string; pass: boolean; detail: string }
   | { kind: "gate-parked"; nodeKey: string; stepId: string }
   | { kind: "gate-cleared"; nodeKey: string; stepId: string; evidence: Artifact[] }
+  | { kind: "gate-rejected"; nodeKey: string; stepId: string; summary: string }
   | { kind: "guard-exceeded"; nodeKey: string; exceeded: GuardExceeded }
   | { kind: "escalated"; nodeKey: string; summary: string }
   /** A human reopened an escalated node with a recorded reason (operator action). */

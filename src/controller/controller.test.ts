@@ -303,3 +303,35 @@ test("failureExcerpt: a WARN storm does not bury the one real assertion", async 
   assert.ok(!/WARN 13276/.test(ex));
   assert.ok(ex.split("\n").length <= 6, ex);
 });
+
+test("reject: the human at a parked gate says no → the gate's failed route (escalate) → reopen carries the note", async () => {
+  const adapter = new ScriptedAdapter([done(0.1), done(0.1)]);
+  const s = spec({ perNodeUsd: 5 });
+  s.pipeline.steps[0]!.on = { done: "merge-gate", failed: "implement", blocked: "escalate" };
+  s.pipeline.steps.push({
+    id: "merge-gate",
+    kind: "human",
+    gate: { summary: "merge it" },
+    acceptance: { observer: "never", candidateRef: "branch", verdicts: ["merged"] },
+    on: { done: "node-done", failed: "escalate" },
+  });
+  s.work.transitions = { onEscalate: "held", onReopen: "planned" };
+  const transitions: string[] = [];
+  const p: Provider<unknown> = { ...provider, onTransition: async (_c, _k, t) => { transitions.push(t.to); } };
+  const ledger = new MemLedger();
+  const never = { id: "never", check: async () => ({ satisfied: false, evidence: [] }) };
+  const c = new Controller(s, { provider: p, adapters: { fake: adapter }, observers: { never }, ledger, log: () => {} });
+  await c.plan();
+  for (let i = 0; i < 4; i++) await c.tick();
+  assert.deepEqual((await c.summary()).parked, ["n1"], "node parks at the gate");
+  await assert.rejects(c.rejectGate("ghost", "x"), /not a node/);
+  await c.rejectGate("n1", "critic's major stands: ordering is not guaranteed in the app", { feedback: "use the hook shape" });
+  assert.deepEqual((await c.summary()).escalated, ["n1"], "the gate's failed route escalates");
+  assert.ok(ledger.kinds().includes("gate-rejected"));
+  assert.deepEqual(transitions.slice(-1), ["held"]);
+  await assert.rejects(c.rejectGate("n1", "again"), /not parked/);
+  await c.reopen("n1", "rework under the clarified ruling");
+  for (let i = 0; i < 3; i++) await c.tick();
+  assert.equal(adapter.requests.length, 2, "reopened node dispatches again");
+  assert.equal(adapter.requests[1]?.context.facts["lastValidateFailure"], "human note: use the hook shape");
+});

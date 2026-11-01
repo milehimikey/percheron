@@ -6,6 +6,7 @@
  *   percheron run      <engagement.yaml> [--plan] [--once] [--poll-ms N] [--max-ticks N]
  *   percheron status   <engagement.yaml> [--json]
  *   percheron reopen   <engagement.yaml> <node> --reason "<why>"
+ *   percheron reject   <engagement.yaml> <node> --reason "<why>" [--feedback "<note>"]
  *
  * validate: static spec validation — ok/issues with severity, exact field path
  *   and the fixing action. Exit 0 ok (warnings allowed), 1 errors, 2 usage.
@@ -28,6 +29,7 @@ const USAGE = [
   "  percheron run      <engagement.yaml> [--plan] [--once] [--poll-ms N] [--max-ticks N]",
   "  percheron status   <engagement.yaml> [--json]",
   "  percheron reopen   <engagement.yaml> <node> --reason \"<why>\" [--feedback \"<note for the retry>\" | --clear-feedback]   (controller stopped)",
+  "  percheron reject   <engagement.yaml> <node> --reason \"<why>\" [--feedback \"<note for the retry>\"]   (parked gate; controller stopped)",
   "",
 ].join("\n");
 
@@ -118,6 +120,19 @@ async function reopen(file: string, args: string[]): Promise<number> {
   return 0;
 }
 
+async function reject(file: string, args: string[]): Promise<number> {
+  const node = args.filter((a) => !a.startsWith("--")).find((a) => a !== file && !/^\d+$/.test(a));
+  const reason = flag(args, "--reason");
+  if (!node || !reason) {
+    process.stderr.write(USAGE);
+    return 2;
+  }
+  const rt = await buildRuntime(file);
+  const feedback = flag(args, "--feedback");
+  await rt.controller.rejectGate(node, reason, feedback === undefined ? {} : { feedback });
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   const file = rest.find((a) => !a.startsWith("--") && !/^\d+$/.test(a));
@@ -134,6 +149,8 @@ async function main(argv: string[]): Promise<number> {
       return status(file, rest);
     case "reopen":
       return reopen(file, rest);
+    case "reject":
+      return reject(file, rest);
     default:
       process.stderr.write(USAGE);
       return 2;
