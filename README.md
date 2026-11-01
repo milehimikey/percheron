@@ -7,7 +7,7 @@ they act. It sits above any agent harness, local or cloud.
 
 Named for the draft workhorse breed: the animal harnesses exist for, and they pull in teams.
 
-**Status: 0.0.1.** It runs, it has been benchmarked once on a real codebase, and the
+**Status: 0.0.2.** It runs, it has been benchmarked twice on a real codebase, and the
 documentation is new. Expect the spec format and the contracts to move. The first work
 provider is [em](https://github.com/milehimikey/em), the event modeling CLI, because an
 event model with hundreds of slices is the canonical case. Providers are pluggable;
