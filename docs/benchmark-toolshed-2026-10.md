@@ -156,10 +156,47 @@ Two follow-ups came out of it. A check cannot yet tell a flake from a failure, s
 timeout in another slice's test costs a retry round. And ktlint's report is named in the
 feedback but not read, the same gap the JUnit reader closed for tests.
 
+## The conformance audit
+
+A week after the runs the owner ran em's conformance loop over toolshed directly, without
+percheron: a full sweep over all 34 implemented slices, then two diff-scoped sweeps over the
+repairs. The loop reads every slice doc against the code and the tests and classifies each
+gap by where the fix belongs: the code, the doc, the model, or nowhere. It is the first check
+on percheron's output made outside percheron's own loop.
+
+| | |
+|---|---|
+| Slices audited | 34, of which percheron built 19 |
+| Invariants cited by tests | 299 of 299 |
+| Findings | 10, then 0 and 0 on the repairs |
+| On percheron's 16 full-pipeline slices | 0 code, 2 doc, 1 accepted |
+| On percheron's 3 first-bench slices | 1 code |
+
+The one code finding was in Tool Catalog from the first bench, which ran implement, validate
+and the human gate with no reviewer or critic in the loop. The projection removed a retired or
+lost tool with no memory of the removal, so a Tool Added redelivered afterwards brought it
+back. Tool Inventory, built by percheron in the rerun, already kept a set of dropped ids for
+exactly this. A read-only critic pass over the first-bench slices had verified the catalog's
+replays as safe; it had read the loan and hold maps and not the tools map. The critic contract
+now asks for a sibling comparison, which is the move that found it.
+
+The two doc findings were both implementers being stricter than the doc: blank recipient and
+tool names rejected on the overdue notice, blank text rejected and a subject line defined on
+the pickup notice. The owner agreed with the code and ruled the docs owe a delta. One critic
+had seen the blank-text rule and recorded it as fine. The contracts now carry a `model-gap`
+severity for this case, so the gate sees the delta when the code merges.
+
+The audit also found that every projection and outbox ran in the Spring app on a processor
+named after its package, not the name its fixture gave it. That is foundation code older than
+percheron, and nothing in the pipeline could have seen it: validate runs the fixture suite,
+and the fixtures were wrong by construction. Only booting the app shows it, which is the case
+for storyline tests over a running app as the next node shape.
+
 ## What it did not show
 
 Sixteen nodes across two runs is not hundreds. The scheduling and resume properties held at this size with
 dependencies; the hypothesis that they hold at the size of a whole event model is still a
 hypothesis. One project, one language, one provider, one adapter. The pipeline shape was
-fixed; nothing was learned about judge steps, which do not exist yet, or about more than
+fixed; nothing was learned about judge steps, which were built after these runs and have
+not run live, or about more than
 one human clearing gates at once.

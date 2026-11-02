@@ -49,10 +49,15 @@ honesty, meaning each cited test really exercises the invariant it claims. It ma
 edits. Every finding must cite a line of the spec or a rule of the project, or it is
 dropped. `NO FINDINGS` is a valid and expected outcome.
 
-It writes `findings.md`: one line per finding with a severity of `blocker`, `major` or
-`minor` and its citation, or `NO FINDINGS` followed by what was checked.
+It writes `findings.md`: one line per finding with a severity of `blocker`, `major`,
+`minor` or `model-gap` and its citation, or `NO FINDINGS` followed by what was checked. A
+`model-gap` is code that does more or less than the spec where the reader judges the code
+right: an input the spec never names rejected as bad, a value the spec leaves open fixed in
+code. It never fails the node. It exists so the human at the gate sees that the spec owes a
+delta when the code merges, instead of an audit finding it later.
 
-Exits: `done` when there is nothing above `minor`, `failed` when a blocker or major stands.
+Exits: `done` when there is nothing above `minor` (model-gap counts as nothing above),
+`failed` when a blocker or major stands.
 
 ## critic
 
@@ -62,8 +67,15 @@ told not to look for or read any other review. If other review material reaches 
 it says so and ignores it. A finding the reviewer did not make is exactly the signal the
 harness wants.
 
-In the one benchmark so far, every findings loop was triggered by the critic. The reviewer
-read the same code and passed it every time. See the benchmark page for the details.
+The critic also makes one check the reviewer does not: sibling comparison. It reads the
+nearest implemented node of the same shape and asks what that node defends against that
+this one does not, such as a set of dropped ids that keeps a redelivered event from bringing
+an entry back. The reviewer reads neighbours for idiom; the critic reads them for guards. The
+check was added after the toolshed conformance audit found exactly that gap in a node whose
+critic had verified replays as safe by reading one map and not the other.
+
+In the first benchmark, every findings loop was triggered by the critic. The reviewer read
+the same code and passed it every time. See the benchmark page for the details.
 
 ## Writing your own contract
 

@@ -7,8 +7,8 @@ they act. It sits above any agent harness, local or cloud.
 
 Named for the draft workhorse breed: the animal harnesses exist for, and they pull in teams.
 
-**Status: 0.0.3.** It runs, it has been benchmarked twice on a real codebase, and the
-documentation is new. Expect the spec format and the contracts to move. The first work
+**Status: 0.0.4.** It runs, it has been benchmarked twice on a real codebase, its output
+has been audited once by em's conformance loop, and the documentation is new. Expect the spec format and the contracts to move. The first work
 provider is [em](https://github.com/milehimikey/em), the event modeling CLI, because an
 event model with hundreds of slices is the canonical case. Providers are pluggable;
 percheron is not em-specific.
@@ -61,13 +61,15 @@ dependency levels, full pipeline, sonnet implementer and reviewer, opus critic. 
 eleven slices merged, 64 agent tasks, about 32 dollars, under five hours of controller time,
 zero workspace escapes. The eleventh was correctly held by the provider. Two escalations
 surfaced a design gap in the target project that no implementer could have closed, which
-is what escalation is for. Details in
+is what escalation is for. A later conformance audit of all 34 toolshed slices found no
+code defect in the 16 that ran the full pipeline and one in a first-bench slice that had no
+reviewer or critic. Details in
 [docs/benchmark-toolshed-2026-10.md](https://github.com/milehimikey/percheron/blob/main/docs/benchmark-toolshed-2026-10.md).
 
 ## Not yet
 
 - Cloud adapters. Only `local-subagent` exists.
-- Judge steps. Accepted by the spec, logged, never routing.
+- A judge step in a live run. Judge steps exist and are tested; no benchmark has used one.
 - More providers, and a plugin registry; today the registry is a `switch` in `src/run.ts`.
 - A stable spec format. `specVersion: "0.2"` is validated strictly, but it will change.
 

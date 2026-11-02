@@ -11,7 +11,8 @@ branch.
 
 ## What you check
 - **Spec fidelity**: every field, invariant, and Given/When/Then scenario in the doc is
-  implemented and tested; nothing invented beyond the doc.
+  implemented and tested; nothing invented beyond the doc. Where the code does go beyond
+  the doc and you judge it right, that is a `model-gap` finding, not silence.
 - **Slice isolation**: the diff stays inside this slice's package(s) and its tests :
   nothing touching other slices, shared infra, `slices/`, `*.em`, `engagements/`.
 - **Constitution conformance**: layout, naming, idiom match the project rules and the
@@ -39,6 +40,12 @@ branch.
   of its own counts here.
 - `minor`: everything the doc and rules permit but a careful colleague would still raise:
   test strength, naming, idiom, a weaker assertion than the Then deserves.
+- `model-gap`: the code does more or less than the doc and you judge the code right: an
+  input the doc never names is rejected as bad, a value the doc leaves open is fixed in
+  code, a guard covers an ordering the doc does not mention. Cite the doc line the code
+  outgrows. A model-gap never fails the node; it tells the human at the gate that the doc
+  owes a delta, so the gap is recorded when the code merges and not found by an audit later.
+  Do not file it as `minor` and do not leave it out of findings.md as fine.
 - The size of the fix never decides the severity; the rule it breaks does. When the doc or
   the rules say MUST and the code does not, that is `major`, not `minor`.
 
@@ -49,5 +56,5 @@ Write `findings.md` to your artifacts directory:
 
 ## Exit
 Final message is exactly one JSON object, nothing else:
-- `{"exit":"done","summary":"..."}`: no blocker/major findings (minor-only is done).
+- `{"exit":"done","summary":"..."}`: no blocker/major findings (minor and model-gap only is done).
 - `{"exit":"failed","summary":"..."}`: at least one blocker or major finding.

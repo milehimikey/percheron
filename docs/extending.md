@@ -2,7 +2,7 @@
 
 Three seams are designed to be replaced: the provider that derives the graph, the adapter
 that runs tasks, and the observer that notices when a human has acted. Each is code
-registered by an id; the spec only names and configures it. In 0.0.3 the registry is a
+registered by an id; the spec only names and configures it. In 0.0.4 the registry is a
 `switch` in `src/run.ts` with one entry per seam, so adding an implementation means adding a
 case there. A plugin mechanism will come when there is a second implementation to justify
 it.
